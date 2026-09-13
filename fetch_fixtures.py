@@ -179,3 +179,4 @@ def fetch_matches_for_date(date_str: str) -> list[dict]:
     }
 
 return unique, debug_info
+    
