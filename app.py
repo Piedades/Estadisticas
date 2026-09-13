@@ -112,20 +112,32 @@ with tab_today:
 
     if buscar:
         date_str = picked_date.strftime("%Y-%m-%d")
+        debug_info = None
         try:
             with st.spinner(f"Consultando besoccer.es para el {date_str}..."):
-                raw_matches = fetch_matches_for_date(date_str)
+                raw_matches, debug_info = fetch_matches_for_date(date_str)
         except Exception as e:
             st.error(
                 f"No se ha podido consultar besoccer.es: {e}\n\n"
                 "Revisa tu conexión a internet. Si el error persiste, puede que "
-                "besoccer.es haya cambiado su estructura — el HTML de la última "
-                "consulta se guardó en `last_fetch.html` para poder revisarlo."
+                "besoccer.es haya cambiado su estructura."
             )
             raw_matches = []
 
         if not raw_matches:
             st.info("No se han encontrado partidos de las 5 grandes ligas para esa fecha.")
+            if debug_info:
+                with st.expander("🔍 Ver diagnóstico (por qué no se encontró nada)"):
+                    st.write(f"**Código de estado HTTP:** {debug_info['status_code']}")
+                    st.write(f"**Tamaño de la respuesta:** {debug_info['html_length']} caracteres")
+                    st.write(f"**Título de la página recibida:** {debug_info['title_snippet']}")
+                    if debug_info["looks_blocked"]:
+                        st.error(
+                            "⚠️ La respuesta parece una pantalla de verificación/bloqueo, "
+                            "no la página real de partidos. Esto sugiere que besoccer.es "
+                            "está bloqueando las peticiones desde este servidor."
+                        )
+                        st.code(debug_info["sample"], language="html")
         else:
             aliases = load_aliases()
             st.success(f"Encontrados {len(raw_matches)} partidos de las 5 ligas.")
