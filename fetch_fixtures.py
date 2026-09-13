@@ -166,4 +166,16 @@ def fetch_matches_for_date(date_str: str) -> list[dict]:
             seen.add(key)
             unique.append(m)
 
-    return unique
+
+    debug_info = {
+    "status_code": resp.status_code,
+    "html_length": len(resp.text),
+    "title_snippet": (soup.title.get_text(strip=True) if soup.title else "(sin <title>)"),
+    "sample": resp.text[:600],
+    "looks_blocked": any(
+    kw in resp.text.lower()
+    for kw in ["captcha", "cloudflare", "access denied", "just a moment", "verifica que eres humano", "attention required"]
+    ),
+    }
+
+return unique, debug_info
