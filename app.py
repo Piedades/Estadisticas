@@ -6,12 +6,9 @@ import glob
 import pandas as pd
 import streamlit as st
 
-from datetime import date
-
 from data_pipeline_and_model import DixonColesModel, load_league_data
 from generic_poisson_model import GenericPoissonModel
 from elo_ratings import EloTracker
-from fetch_fixtures import fetch_matches_for_date, resolve_team_name, load_aliases
 
 st.set_page_config(page_title="Big 5 Ligas — Panel de predicción", layout="wide")
 
@@ -70,7 +67,7 @@ def get_elo(league_code: str) -> EloTracker:
 # ---------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------
-st.sidebar.title("⚽ Big 5 Ligas")
+st.sidebar.title("Big 5 Ligas")
 league_label = st.sidebar.selectbox("Liga", list(LEAGUES.values()))
 league_code = [k for k, v in LEAGUES.items() if v == league_label][0]
 
@@ -93,82 +90,9 @@ elo = get_elo(league_code)
 st.title(f"{league_label}")
 st.caption(f"{len(df)} partidos cargados · {df['Date'].min().date()} a {df['Date'].max().date()}")
 
-tab_today, tab_pred, tab_elo, tab_ratings, tab_stats = st.tabs(
-    ["📅 Partidos del día", "🔮 Predecir partido", "📊 Ranking Elo", "🎯 Ratings por equipo", "📈 Estadísticas de la liga"]
+tab_pred, tab_elo, tab_ratings, tab_stats = st.tabs(
+    ["Predecir partido", "Ranking Elo", "Ratings por equipo", "Estadísticas de la liga"]
 )
-
-# ---------------------------------------------------------------
-# TAB 0: Partidos del día (autodetección desde besoccer.es)
-# ---------------------------------------------------------------
-with tab_today:
-    st.subheader("Buscar partidos por fecha")
-    st.caption(
-        "Trae los partidos programados de besoccer.es para el día elegido, "
-        "filtra las 5 grandes ligas y calcula la predicción de cada uno."
-    )
-
-    picked_date = st.date_input("Fecha", value=date.today())
-    buscar = st.button("Buscar partidos", type="primary")
-
-    if buscar:
-        date_str = picked_date.strftime("%Y-%m-%d")
-        debug_info = None
-        try:
-            with st.spinner(f"Consultando besoccer.es para el {date_str}..."):
-                raw_matches, debug_info = fetch_matches_for_date(date_str)
-        except Exception as e:
-            st.error(
-                f"No se ha podido consultar besoccer.es: {e}\n\n"
-                "Revisa tu conexión a internet. Si el error persiste, puede que "
-                "besoccer.es haya cambiado su estructura."
-            )
-            raw_matches = []
-
-        if not raw_matches:
-            st.info("No se han encontrado partidos de las 5 grandes ligas para esa fecha.")
-            if debug_info:
-                with st.expander("🔍 Ver diagnóstico (por qué no se encontró nada)"):
-                    st.write(f"**Código de estado HTTP:** {debug_info['status_code']}")
-                    st.write(f"**Tamaño de la respuesta:** {debug_info['html_length']} caracteres")
-                    st.write(f"**Título de la página recibida:** {debug_info['title_snippet']}")
-                    if debug_info["looks_blocked"]:
-                        st.error(
-                            "⚠️ La respuesta parece una pantalla de verificación/bloqueo, "
-                            "no la página real de partidos. Esto sugiere que besoccer.es "
-                            "está bloqueando las peticiones desde este servidor."
-                        )
-                        st.code(debug_info["sample"], language="html")
-        else:
-            aliases = load_aliases()
-            st.success(f"Encontrados {len(raw_matches)} partidos de las 5 ligas.")
-
-            for m in raw_matches:
-                lg = m["league_code"]
-                model = get_goals_model(lg, decay)
-                known_teams = list(model.teams)
-
-                home = resolve_team_name(m["home_raw"], lg, known_teams, aliases)
-                away = resolve_team_name(m["away_raw"], lg, known_teams, aliases)
-
-                with st.container(border=True):
-                    c1, c2 = st.columns([3, 1])
-                    c1.markdown(f"**{LEAGUES[lg]}** · {m['time']}")
-
-                    if home is None or away is None:
-                        st.warning(
-                            f"No he podido emparejar: '{m['home_raw']}' vs '{m['away_raw']}' "
-                            f"con ningún equipo conocido de {lg}. "
-                            f"Añádelo a team_aliases.json y vuelve a buscar."
-                        )
-                        continue
-
-                    pred = model.predict_match(home, away)
-                    st.markdown(f"### {home}  {pred['lambda_home']:.2f} — {pred['lambda_away']:.2f}  {away}")
-
-                    p1, p2, p3 = st.columns(3)
-                    p1.metric(f"Gana {home}", f"{pred['P(H)']:.1%}")
-                    p2.metric("Empate", f"{pred['P(D)']:.1%}")
-                    p3.metric(f"Gana {away}", f"{pred['P(A)']:.1%}")
 
 # ---------------------------------------------------------------
 # TAB 1: Predicción de partido
