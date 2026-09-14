@@ -140,7 +140,7 @@ def get_season_sim(league_code: str, decay: float, season: str, top_europe: int,
 # Sidebar
 # ---------------------------------------------------------------
 st.sidebar.title("⚽ Big 5 Ligas")
-league_label = st.sidebar.selectbox("Liga", list(LEAGUES.values()))
+league_label = st.sidebar.selectbox("Liga", list(LEAGUES.values()), key="league_select")
 league_code = [k for k, v in LEAGUES.items() if v == league_label][0]
 
 half_life_months = st.sidebar.slider(
@@ -246,6 +246,13 @@ with tab_today:
         "(no besoccer.es). Necesita el secret FOOTBALL_DATA_TOKEN configurado."
     )
 
+    if st.session_state.get("show_prediction") and st.session_state.get("home_team"):
+        st.success(
+            f"✅ Predicción lista para **{st.session_state['home_team']} vs "
+            f"{st.session_state['away_team']}** — ve a la pestaña "
+            f"**\"🔮 Predecir partido\"** para verla completa (ya está todo calculado)."
+        )
+
     import datetime as _dt
     picked_date = st.date_input("Fecha", value=_dt.date.today(), key="today_date")
 
@@ -288,6 +295,13 @@ with tab_today:
                     st.markdown(f"### {home}  vs  {away}")
                     render_mini_prob_bar(pred_today["P(H)"], pred_today["P(D)"], pred_today["P(A)"])
                     st.caption(favorite_badge(pred_today["P(H)"], pred_today["P(D)"], pred_today["P(A)"], home, away))
+
+                    if st.button("Ver predicción completa →", key=f"today_predict_{lg}_{home}_{away}"):
+                        st.session_state["league_select"] = LEAGUES[lg]
+                        st.session_state["home_team"] = home
+                        st.session_state["away_team"] = away
+                        st.session_state["show_prediction"] = True
+                        st.rerun()
 
 # ---------------------------------------------------------------
 # TAB 1: Predicción de partido (+ comparador de cuotas + exportar)
