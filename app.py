@@ -3,6 +3,7 @@ Dashboard interactivo — Modelo predictivo Big 5 Ligas Europeas
 Ejecutar con: streamlit run app.py
 """
 import io
+import math
 
 import numpy as np
 import pandas as pd
@@ -112,10 +113,15 @@ st.sidebar.title("⚽ Big 5 Ligas")
 league_label = st.sidebar.selectbox("Liga", list(LEAGUES.values()))
 league_code = [k for k, v in LEAGUES.items() if v == league_label][0]
 
-decay = st.sidebar.slider(
-    "Peso de partidos recientes (decay)", 0.0005, 0.005, 0.0015, 0.0005,
-    help="Más alto = el modelo da más peso a los partidos recientes y olvida antes los viejos."
+half_life_months = st.sidebar.slider(
+    "Vida media de los partidos antiguos (meses)", 4, 46, 15,
+    help=(
+        "Cuántos meses tarda un partido en pesar la mitad en el modelo. "
+        "Más bajo = el modelo se adapta más rápido a la forma reciente. "
+        "Más alto = usa más historial, más lento para reaccionar a rachas."
+    )
 )
+decay = math.log(2) / (half_life_months * 30)
 
 st.sidebar.markdown("---")
 st.sidebar.caption(
@@ -337,6 +343,25 @@ with tab_team:
             ratings = m.team_ratings()
             row = ratings[ratings["team"] == team_choice].iloc[0]
             col.metric(label, f"{row[f'{label}_attack']:+.2f} / {row[f'{label}_defense']:+.2f}")
+
+    st.markdown("---")
+    st.markdown("**Forma reciente (últimos 5 partidos)**")
+    team_matches = df[
+        (df["HomeTeam"] == team_choice) | (df["AwayTeam"] == team_choice)
+    ].sort_values("Date", ascending=False).head(5).sort_values("Date")
+    if team_matches.empty:
+        st.caption("No hay partidos recientes en los datos cargados.")
+    else:
+        letters = []
+        for _, row in team_matches.iterrows():
+            if row["HomeTeam"] == team_choice:
+                gf, gc = row["FTHG"], row["FTAG"]
+            else:
+                gf, gc = row["FTAG"], row["FTHG"]
+            letters.append("V" if gf > gc else "E" if gf == gc else "D")
+        puntos = sum(3 if r == "V" else 1 if r == "E" else 0 for r in letters)
+        st.markdown(f"### {'  '.join(letters)}")
+        st.caption(f"{puntos} de {len(letters) * 3} puntos posibles en los últimos {len(letters)} partidos.")
 
 # ---------------------------------------------------------------
 # TAB 3: Ranking Elo
