@@ -482,13 +482,25 @@ with tab_elo:
 # TAB 4: Ratings por equipo (ataque/defensa)
 # ---------------------------------------------------------------
 with tab_ratings:
-    metric_choice = st.selectbox("Métrica", list(metric_models.keys()))
-    m = metric_models[metric_choice]
-    ratings = m.team_ratings().reset_index(drop=True)
-    ratings.columns = ["Equipo", "Ataque", "Defensa"]
-    ratings["Ataque"] = ratings["Ataque"].round(2)
-    ratings["Defensa"] = ratings["Defensa"].round(2)
-    st.caption("Ataque más alto = genera más. Defensa más baja = concede menos.")
+    metric_choice = st.selectbox("Métrica", ["Goles"] + list(METRIC_COLUMNS.keys()))
+    rows = []
+    for team in sorted(goals_model.teams):
+        avg = team_match_averages(df, team)
+        if metric_choice == "Goles":
+            favor = avg.get("Goles a favor")
+            contra = avg.get("Goles en contra")
+        else:
+            favor = avg.get(f"{metric_choice} a favor")
+            contra = avg.get(f"{metric_choice} en contra")
+        if favor is None:
+            continue
+        rows.append({
+            "Equipo": team,
+            "A favor (por partido)": round(favor, 2),
+            "En contra (por partido)": round(contra, 2),
+        })
+    ratings = pd.DataFrame(rows).sort_values("A favor (por partido)", ascending=False).reset_index(drop=True)
+    st.caption("Promedio real por partido. Más alto en \"a favor\" = genera más. Más bajo en \"en contra\" = concede menos.")
     st.dataframe(ratings, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------
