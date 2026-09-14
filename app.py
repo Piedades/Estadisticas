@@ -18,6 +18,7 @@ from github_sync import get_file, put_file
 from auto_update import update_league, current_season_code
 from auth import authenticate, register_user, load_users, is_admin, delete_user, update_invite_code
 from season_sim import simulate_season
+from team_stats import team_match_averages, METRIC_COLUMNS
 
 st.set_page_config(page_title="Big 5 Ligas — Panel de predicción", layout="wide")
 
@@ -371,30 +372,27 @@ Modelo estadístico, no es una recomendación de apuesta.
 with tab_team:
     team_choice = st.selectbox("Equipo", sorted(goals_model.teams), key="team_profile")
 
-    n = len(goals_model.teams)
-    idx_map = {t: i for i, t in enumerate(goals_model.teams)}
-    attack_goals = goals_model.params[:n]
-    defense_goals = goals_model.params[n:2 * n]
-    i = idx_map[team_choice]
-
     elo_table = elo.current_table()
     elo_row = elo_table[elo_table["team"] == team_choice]
     elo_value = int(elo_row["elo"].iloc[0]) if not elo_row.empty else None
     elo_rank = int(elo_table.reset_index(drop=True).index[elo_table["team"] == team_choice][0]) + 1 if not elo_row.empty else None
 
+    avg = team_match_averages(df, team_choice)
+
     st.subheader(team_choice)
     c1, c2, c3 = st.columns(3)
     c1.metric("Elo actual", elo_value if elo_value else "—", help=f"Puesto #{elo_rank} de {len(elo_table)}" if elo_rank else None)
-    c2.metric("Ataque (goles)", f"{attack_goals[i]:+.2f}")
-    c3.metric("Defensa (goles)", f"{defense_goals[i]:+.2f}", help="Más bajo = mejor defensa (concede menos)")
+    c2.metric("Goles a favor (por partido)", f"{avg.get('Goles a favor', 0):.2f}")
+    c3.metric("Goles en contra (por partido)", f"{avg.get('Goles en contra', 0):.2f}")
+    st.caption(f"Sobre {avg.get('Partidos jugados', 0)} partidos jugados en los datos cargados.")
 
-    st.markdown("**Otras métricas (ataque / defensa)**")
-    cols = st.columns(len(metric_models))
-    for col, (label, m) in zip(cols, metric_models.items()):
-        if team_choice in m.teams:
-            ratings = m.team_ratings()
-            row = ratings[ratings["team"] == team_choice].iloc[0]
-            col.metric(label, f"{row[f'{label}_attack']:+.2f} / {row[f'{label}_defense']:+.2f}")
+    st.markdown("**Otras métricas por partido (a favor / en contra)**")
+    cols = st.columns(len(METRIC_COLUMNS))
+    for col, label in zip(cols, METRIC_COLUMNS.keys()):
+        favor = avg.get(f"{label} a favor")
+        contra = avg.get(f"{label} en contra")
+        if favor is not None:
+            col.metric(label, f"{favor:.1f} / {contra:.1f}")
 
     st.markdown("---")
     st.markdown("**Forma reciente (últimos 5 partidos)**")
@@ -435,24 +433,20 @@ with tab_compare:
         team_b_options = [t for t in team_options if t != team_a]
         team_b = st.selectbox("Equipo B", team_b_options, index=0, key="compare_b")
 
-    n_cmp = len(goals_model.teams)
-    idx_map_cmp = {t: i for i, t in enumerate(goals_model.teams)}
-    attack_cmp = goals_model.params[:n_cmp]
-    defense_cmp = goals_model.params[n_cmp:2 * n_cmp]
     elo_table_cmp = elo.current_table().set_index("team")["elo"]
 
     def _team_row(team):
-        i = idx_map_cmp[team]
+        avg = team_match_averages(df, team)
         row = {
             "Elo": f"{elo_table_cmp.get(team, 0):.0f}",
-            "Ataque (goles)": f"{attack_cmp[i]:+.2f}",
-            "Defensa (goles)": f"{defense_cmp[i]:+.2f}",
+            "Goles a favor": f"{avg.get('Goles a favor', 0):.2f}",
+            "Goles en contra": f"{avg.get('Goles en contra', 0):.2f}",
         }
-        for label, m in metric_models.items():
-            if team in m.teams:
-                r = m.team_ratings()
-                r = r[r["team"] == team].iloc[0]
-                row[f"{label} (ataque/defensa)"] = f"{r[f'{label}_attack']:+.2f} / {r[f'{label}_defense']:+.2f}"
+        for label in METRIC_COLUMNS.keys():
+            favor = avg.get(f"{label} a favor")
+            contra = avg.get(f"{label} en contra")
+            if favor is not None:
+                row[label] = f"{favor:.1f} / {contra:.1f}"
         tm = df[(df["HomeTeam"] == team) | (df["AwayTeam"] == team)].sort_values("Date", ascending=False).head(5).sort_values("Date")
         letters = []
         for _, r in tm.iterrows():
@@ -465,6 +459,7 @@ with tab_compare:
     row_b = _team_row(team_b)
     compare_df = pd.DataFrame({team_a: row_a, team_b: row_b})
     st.dataframe(compare_df, use_container_width=True)
+    st.caption("Córners / Tiros / Tiros a puerta / Tarjetas amarillas en formato \"a favor / en contra\", promedio por partido.")
 
     if st.button("Ver predicción de este partido", key="compare_predict_btn"):
         pred_cmp = goals_model.predict_match(team_a, team_b)
