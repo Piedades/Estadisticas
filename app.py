@@ -16,30 +16,50 @@ from elo_ratings import EloTracker
 from backtest import run_walk_forward, run_calibration
 from github_sync import get_file, put_file
 from auto_update import update_league, current_season_code
+from auth import authenticate, register_user, load_users
 
 st.set_page_config(page_title="Big 5 Ligas — Panel de predicción", layout="wide")
 
 # ---------------------------------------------------------------
-# Acceso protegido por contraseña
+# Acceso con usuarios individuales
 # ---------------------------------------------------------------
-APP_PASSWORD = st.secrets.get("APP_PASSWORD", "futbol2026")
-
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
+if "current_user" not in st.session_state:
+    st.session_state["current_user"] = None
 
 if not st.session_state["authenticated"]:
     st.title("🔒 Big 5 Ligas — Acceso")
-    pwd = st.text_input("Contraseña", type="password")
-    if st.button("Entrar"):
-        if pwd == APP_PASSWORD:
-            st.session_state["authenticated"] = True
-            st.rerun()
-        else:
-            st.error("Contraseña incorrecta.")
-    st.caption(
-        "Contraseña por defecto: futbol2026. Cámbiala en Streamlit Cloud > "
-        "Settings > Secrets añadiendo: APP_PASSWORD = \"tu-contraseña\""
-    )
+
+    login_tab, register_tab = st.tabs(["Iniciar sesión", "Crear cuenta"])
+
+    with login_tab:
+        with st.form("login_form"):
+            login_user = st.text_input("Usuario")
+            login_pwd = st.text_input("Contraseña", type="password")
+            login_submit = st.form_submit_button("Entrar")
+        if login_submit:
+            if authenticate(login_user, login_pwd):
+                st.session_state["authenticated"] = True
+                st.session_state["current_user"] = login_user.strip().lower()
+                st.rerun()
+            else:
+                st.error("Usuario o contraseña incorrectos.")
+
+    with register_tab:
+        st.caption("Necesitas el código de invitación para crear una cuenta nueva.")
+        with st.form("register_form"):
+            new_user = st.text_input("Elige un usuario")
+            new_pwd = st.text_input("Elige una contraseña (mínimo 6 caracteres)", type="password")
+            invite_code = st.text_input("Código de invitación", type="password")
+            register_submit = st.form_submit_button("Crear cuenta")
+        if register_submit:
+            ok, msg = register_user(new_user, new_pwd, invite_code)
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+
     st.stop()
 
 LEAGUES = {
@@ -129,8 +149,11 @@ st.sidebar.caption(
     "Nada de esto sale de tu ordenador."
 )
 
+st.sidebar.markdown("---")
+st.sidebar.caption(f"Sesión: **{st.session_state['current_user']}**")
 if st.sidebar.button("Cerrar sesión"):
     st.session_state["authenticated"] = False
+    st.session_state["current_user"] = None
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -482,17 +505,23 @@ with tab_diary:
     st.subheader("Diario de apuestas propio")
     st.caption(
         "Registra aquí las apuestas que TÚ haces de verdad (no las simuladas del backtest), "
-        "para comparar tu rendimiento real con el modelo. Se guarda en tu repositorio de GitHub, "
-        "así que necesitas tener configurado el secret GITHUB_TOKEN (ver aviso más abajo si falta)."
+        "para comparar tu rendimiento real con el modelo. Solo ves las tuyas, aunque otros "
+        "usuarios usen la misma app."
     )
+
+    current_user = st.session_state["current_user"]
 
     log_content, _ = get_file("bets_log.csv")
     if log_content:
-        log_df = pd.read_csv(io.StringIO(log_content))
+        all_bets_df = pd.read_csv(io.StringIO(log_content))
+        if "usuario" not in all_bets_df.columns:
+            all_bets_df["usuario"] = "desconocido"
     else:
-        log_df = pd.DataFrame(columns=[
-            "fecha", "liga", "local", "visitante", "seleccion", "cuota", "stake", "resultado"
+        all_bets_df = pd.DataFrame(columns=[
+            "usuario", "fecha", "liga", "local", "visitante", "seleccion", "cuota", "stake", "resultado"
         ])
+
+    log_df = all_bets_df[all_bets_df["usuario"] == current_user].copy()
 
     with st.form("nueva_apuesta"):
         c1, c2, c3 = st.columns(3)
@@ -513,11 +542,12 @@ with tab_diary:
 
     if submitted:
         new_row = pd.DataFrame([{
+            "usuario": current_user,
             "fecha": f_date, "liga": f_liga, "local": f_local, "visitante": f_visitante,
             "seleccion": f_seleccion, "cuota": f_cuota, "stake": f_stake, "resultado": f_resultado,
         }])
-        log_df = pd.concat([log_df, new_row], ignore_index=True)
-        ok, msg = put_file("bets_log.csv", log_df.to_csv(index=False), "Añadir apuesta desde la app")
+        all_bets_df = pd.concat([all_bets_df, new_row], ignore_index=True)
+        ok, msg = put_file("bets_log.csv", all_bets_df.to_csv(index=False), f"Añadir apuesta de {current_user}")
         if ok:
             st.success("Apuesta guardada.")
         else:
@@ -525,8 +555,8 @@ with tab_diary:
 
     if not log_df.empty:
         st.markdown("---")
-        st.markdown("**Historial de apuestas**")
-        st.dataframe(log_df, use_container_width=True, hide_index=True)
+        st.markdown("**Tu historial de apuestas**")
+        st.dataframe(log_df.drop(columns=["usuario"]), use_container_width=True, hide_index=True)
 
         resolved = log_df[log_df["resultado"].isin(["Ganada", "Perdida"])].copy()
         if not resolved.empty:
