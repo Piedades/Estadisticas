@@ -16,7 +16,8 @@ from elo_ratings import EloTracker
 from backtest import run_walk_forward, run_calibration
 from github_sync import get_file, put_file
 from auto_update import update_league, current_season_code
-from auth import authenticate, register_user, load_users
+from auth import authenticate, register_user, load_users, is_admin, delete_user, update_invite_code
+from season_sim import simulate_season
 
 st.set_page_config(page_title="Big 5 Ligas — Panel de predicción", layout="wide")
 
@@ -126,6 +127,12 @@ def get_calibration(league_code: str, decay: float) -> pd.DataFrame:
     return run_calibration(df, decay=decay)
 
 
+@st.cache_data(show_spinner="Simulando el resto de la temporada (puede tardar unos segundos)...")
+def get_season_sim(league_code: str, decay: float, season: str, top_europe: int, relegation: int) -> pd.DataFrame:
+    df = get_league_df(league_code)
+    return simulate_season(df, season, decay=decay, n_sims=1500, top_europe=top_europe, relegation=relegation)
+
+
 # ---------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------
@@ -196,11 +203,33 @@ elo = get_elo(league_code)
 st.title(f"{league_label}")
 st.caption(f"{len(df)} partidos cargados · {df['Date'].min().date()} a {df['Date'].max().date()}")
 
-tab_pred, tab_team, tab_elo, tab_ratings, tab_stats, tab_backtest, tab_diary = st.tabs(
-    ["🔮 Predecir partido", "🗂️ Ficha de equipo", "📊 Ranking Elo",
-     "🎯 Ratings por equipo", "📈 Estadísticas de la liga", "🧪 Rendimiento histórico",
-     "📓 Diario de apuestas"]
-)
+tab_defs = [
+    ("🔮 Predecir partido", "pred"),
+    ("🗂️ Ficha de equipo", "team"),
+    ("⚖️ Comparar equipos", "compare"),
+    ("📊 Ranking Elo", "elo"),
+    ("🎯 Ratings por equipo", "ratings"),
+    ("📈 Estadísticas de la liga", "stats"),
+    ("🎲 Simulador de temporada", "sim"),
+    ("🧪 Rendimiento histórico", "backtest"),
+    ("📓 Diario de apuestas", "diary"),
+]
+current_is_admin = is_admin(st.session_state["current_user"])
+if current_is_admin:
+    tab_defs.append(("🛠️ Administración", "admin"))
+
+tab_objects = st.tabs([label for label, _ in tab_defs])
+tabs = {key: tab for (label, key), tab in zip(tab_defs, tab_objects)}
+tab_pred = tabs["pred"]
+tab_team = tabs["team"]
+tab_compare = tabs["compare"]
+tab_elo = tabs["elo"]
+tab_ratings = tabs["ratings"]
+tab_stats = tabs["stats"]
+tab_sim = tabs["sim"]
+tab_backtest = tabs["backtest"]
+tab_diary = tabs["diary"]
+tab_admin = tabs.get("admin")
 
 # ---------------------------------------------------------------
 # TAB 1: Predicción de partido (+ comparador de cuotas + exportar)
@@ -386,6 +415,65 @@ with tab_team:
         st.markdown(f"### {'  '.join(letters)}")
         st.caption(f"{puntos} de {len(letters) * 3} puntos posibles en los últimos {len(letters)} partidos.")
 
+    st.markdown("---")
+    st.markdown("**Evolución del Elo**")
+    elo_hist = elo.team_elo_history(team_choice)
+    if elo_hist.empty:
+        st.caption("No hay histórico suficiente para graficar la evolución.")
+    else:
+        st.line_chart(elo_hist.set_index("date")["elo"])
+
+# ---------------------------------------------------------------
+# TAB: Comparar equipos
+# ---------------------------------------------------------------
+with tab_compare:
+    cc1, cc2 = st.columns(2)
+    team_options = sorted(goals_model.teams)
+    with cc1:
+        team_a = st.selectbox("Equipo A", team_options, index=0, key="compare_a")
+    with cc2:
+        team_b_options = [t for t in team_options if t != team_a]
+        team_b = st.selectbox("Equipo B", team_b_options, index=0, key="compare_b")
+
+    n_cmp = len(goals_model.teams)
+    idx_map_cmp = {t: i for i, t in enumerate(goals_model.teams)}
+    attack_cmp = goals_model.params[:n_cmp]
+    defense_cmp = goals_model.params[n_cmp:2 * n_cmp]
+    elo_table_cmp = elo.current_table().set_index("team")["elo"]
+
+    def _team_row(team):
+        i = idx_map_cmp[team]
+        row = {
+            "Elo": f"{elo_table_cmp.get(team, 0):.0f}",
+            "Ataque (goles)": f"{attack_cmp[i]:+.2f}",
+            "Defensa (goles)": f"{defense_cmp[i]:+.2f}",
+        }
+        for label, m in metric_models.items():
+            if team in m.teams:
+                r = m.team_ratings()
+                r = r[r["team"] == team].iloc[0]
+                row[f"{label} (ataque/defensa)"] = f"{r[f'{label}_attack']:+.2f} / {r[f'{label}_defense']:+.2f}"
+        tm = df[(df["HomeTeam"] == team) | (df["AwayTeam"] == team)].sort_values("Date", ascending=False).head(5).sort_values("Date")
+        letters = []
+        for _, r in tm.iterrows():
+            gf, gc = (r["FTHG"], r["FTAG"]) if r["HomeTeam"] == team else (r["FTAG"], r["FTHG"])
+            letters.append("V" if gf > gc else "E" if gf == gc else "D")
+        row["Forma reciente"] = "  ".join(letters) if letters else "—"
+        return row
+
+    row_a = _team_row(team_a)
+    row_b = _team_row(team_b)
+    compare_df = pd.DataFrame({team_a: row_a, team_b: row_b})
+    st.dataframe(compare_df, use_container_width=True)
+
+    if st.button("Ver predicción de este partido", key="compare_predict_btn"):
+        pred_cmp = goals_model.predict_match(team_a, team_b)
+        st.markdown(f"**{team_a} {pred_cmp['lambda_home']:.2f} — {pred_cmp['lambda_away']:.2f} {team_b}**")
+        pc1, pc2, pc3 = st.columns(3)
+        pc1.metric(f"Gana {team_a}", f"{pred_cmp['P(H)']:.1%}")
+        pc2.metric("Empate", f"{pred_cmp['P(D)']:.1%}")
+        pc3.metric(f"Gana {team_b}", f"{pred_cmp['P(A)']:.1%}")
+
 # ---------------------------------------------------------------
 # TAB 3: Ranking Elo
 # ---------------------------------------------------------------
@@ -427,6 +515,39 @@ with tab_stats:
     st.dataframe(season_stats, use_container_width=True)
 
     st.bar_chart(season_stats["Goles/partido"])
+
+# ---------------------------------------------------------------
+# TAB: Simulador de temporada completa (Monte Carlo)
+# ---------------------------------------------------------------
+with tab_sim:
+    st.subheader("Simulador de temporada completa")
+    st.caption(
+        "Simula todos los partidos que quedan de la temporada en curso, 1.500 veces seguidas, "
+        "para calcular la probabilidad de cada equipo de ser campeón, entrar en puestos europeos "
+        "o descender. Como no tenemos el calendario real de partidos futuros, se asume que cada "
+        "equipo juega dos veces contra cada rival (una en casa, otra fuera) y se descuentan los "
+        "partidos que ya se han jugado. Es una aproximación, no el calendario exacto."
+    )
+
+    sc1, sc2 = st.columns(2)
+    top_europe_n = sc1.number_input("Nº de puestos europeos a contar", min_value=1, max_value=8, value=4)
+    relegation_n = sc2.number_input("Nº de puestos de descenso a contar", min_value=0, max_value=6, value=3)
+
+    current_season_data = sorted(df["Season"].dropna().unique())[-1]
+    st.caption(f"Simulando el resto de la temporada {current_season_data}.")
+
+    if st.button("Simular temporada", type="primary"):
+        sim_result = get_season_sim(league_code, decay, current_season_data, int(top_europe_n), int(relegation_n))
+        st.session_state["sim_result"] = sim_result
+
+    if "sim_result" in st.session_state:
+        sim_display = st.session_state["sim_result"].copy()
+        sim_display["P(Campeón)"] = (sim_display["P(Campeón)"] * 100).round(1)
+        sim_display["P(Puestos europeos)"] = (sim_display["P(Puestos europeos)"] * 100).round(1)
+        sim_display["P(Descenso)"] = (sim_display["P(Descenso)"] * 100).round(1)
+        sim_display.columns = ["Equipo", "Puntos actuales", "P(Campeón) %", "P(Puestos europeos) %", "P(Descenso) %"]
+        st.dataframe(sim_display, use_container_width=True, hide_index=True)
+        st.bar_chart(sim_display.set_index("Equipo")["P(Campeón) %"])
 
 # ---------------------------------------------------------------
 # TAB 6: Rendimiento histórico (backtest walk-forward)
@@ -570,3 +691,46 @@ with tab_diary:
             c3.metric("ROI real", f"{resolved['pnl'].sum() / resolved['stake'].sum():+.1%}")
     else:
         st.info("Todavía no has registrado ninguna apuesta.")
+
+# ---------------------------------------------------------------
+# TAB: Administración (solo visible para usuarios admin)
+# ---------------------------------------------------------------
+if tab_admin is not None:
+    with tab_admin:
+        st.subheader("Administración de usuarios")
+        st.caption("Solo tú (como administrador) ves esta pestaña.")
+
+        users = load_users()
+        st.markdown(f"**{len(users)} usuarios registrados**")
+        if users:
+            st.dataframe(
+                pd.DataFrame({"usuario": list(users.keys())}),
+                use_container_width=True, hide_index=True,
+            )
+
+        st.markdown("---")
+        st.markdown("**Borrar un usuario**")
+        if users:
+            user_to_delete = st.selectbox("Usuario a borrar", list(users.keys()), key="admin_delete_select")
+            if st.button("Borrar cuenta", key="admin_delete_btn"):
+                ok, msg = delete_user(user_to_delete)
+                if ok:
+                    st.success(f"Usuario '{user_to_delete}' borrado.")
+                else:
+                    st.error(msg)
+        else:
+            st.caption("No hay usuarios que borrar todavía.")
+
+        st.markdown("---")
+        st.markdown("**Cambiar el código de invitación**")
+        st.caption(
+            "Esto no toca los Secrets de Streamlit Cloud — se guarda en tu repositorio y "
+            "sustituye al código anterior de inmediato."
+        )
+        new_invite = st.text_input("Nuevo código de invitación", key="admin_invite_input")
+        if st.button("Actualizar código", key="admin_invite_btn"):
+            ok, msg = update_invite_code(new_invite)
+            if ok:
+                st.success("Código de invitación actualizado.")
+            else:
+                st.error(msg)

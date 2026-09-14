@@ -49,6 +49,22 @@ class EloTracker:
             columns=["team", "elo"]
         )
 
+    def team_elo_history(self, team) -> pd.DataFrame:
+        """Evolución del Elo de un equipo a lo largo del tiempo (rating justo
+        antes de cada uno de sus partidos, más el rating actual al final)."""
+        rows = []
+        last_date = None
+        for h in self.history:
+            if h["home"] == team:
+                rows.append({"date": h["date"], "elo": h["elo_home_pre"]})
+                last_date = h["date"]
+            elif h["away"] == team:
+                rows.append({"date": h["date"], "elo": h["elo_away_pre"]})
+                last_date = h["date"]
+        if last_date is not None and team in self.ratings:
+            rows.append({"date": last_date, "elo": self.ratings[team]})
+        return pd.DataFrame(rows)
+
     def win_prob(self, home, away):
         r_home = self._get(home)
         r_away = self._get(away)

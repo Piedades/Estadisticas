@@ -17,6 +17,7 @@ import streamlit as st
 from github_sync import get_file, put_file
 
 USERS_PATH = "users.json"
+CONFIG_PATH = "config.json"
 
 
 def _hash_password(password: str, salt: str = None) -> tuple:
@@ -36,8 +37,47 @@ def save_users(users: dict):
     return put_file(USERS_PATH, json.dumps(users, indent=2), "Actualizar usuarios")
 
 
+def load_config() -> dict:
+    content, _ = get_file(CONFIG_PATH)
+    if not content:
+        return {}
+    return json.loads(content)
+
+
+def save_config(config: dict):
+    return put_file(CONFIG_PATH, json.dumps(config, indent=2), "Actualizar configuración")
+
+
+def delete_user(username: str):
+    """Devuelve (ok: bool, mensaje: str)."""
+    username = username.strip().lower()
+    users = load_users()
+    if username not in users:
+        return False, "Ese usuario no existe."
+    del users[username]
+    return save_users(users)
+
+
+def update_invite_code(new_code: str):
+    """Cambia el código de invitación desde la propia app (se guarda en
+    config.json, con prioridad sobre el secret INVITE_CODE)."""
+    new_code = new_code.strip()
+    if not new_code:
+        return False, "El código no puede estar vacío."
+    config = load_config()
+    config["invite_code"] = new_code
+    return save_config(config)
+
+
+def is_admin(username: str) -> bool:
+    admins = st.secrets.get("ADMIN_USERS", "")
+    admin_list = [a.strip().lower() for a in admins.split(",") if a.strip()]
+    return username.strip().lower() in admin_list
+
+
 def _check_invite_code(code: str) -> bool:
-    real_code = st.secrets.get("INVITE_CODE")
+    config = load_config()
+    real_code = config.get("invite_code") or st.secrets.get("INVITE_CODE")
     if not real_code:
         return False
     return code == real_code
