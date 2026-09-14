@@ -246,6 +246,12 @@ with tab_today:
         "(no besoccer.es). Necesita el secret FOOTBALL_DATA_TOKEN configurado."
     )
 
+    def _select_match(lg, home, away):
+        st.session_state["league_select"] = LEAGUES[lg]
+        st.session_state["home_team"] = home
+        st.session_state["away_team"] = away
+        st.session_state["show_prediction"] = True
+
     if st.session_state.get("show_prediction") and st.session_state.get("home_team"):
         st.success(
             f"✅ Predicción lista para **{st.session_state['home_team']} vs "
@@ -296,12 +302,11 @@ with tab_today:
                     render_mini_prob_bar(pred_today["P(H)"], pred_today["P(D)"], pred_today["P(A)"])
                     st.caption(favorite_badge(pred_today["P(H)"], pred_today["P(D)"], pred_today["P(A)"], home, away))
 
-                    if st.button("Ver predicción completa →", key=f"today_predict_{lg}_{home}_{away}"):
-                        st.session_state["league_select"] = LEAGUES[lg]
-                        st.session_state["home_team"] = home
-                        st.session_state["away_team"] = away
-                        st.session_state["show_prediction"] = True
-                        st.rerun()
+                    st.button(
+                        "Ver predicción completa →",
+                        key=f"today_predict_{lg}_{home}_{away}",
+                        on_click=_select_match, args=(lg, home, away),
+                    )
 
 # ---------------------------------------------------------------
 # TAB 1: Predicción de partido (+ comparador de cuotas + exportar)
