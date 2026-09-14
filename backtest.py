@@ -58,3 +58,45 @@ def run_walk_forward(df: pd.DataFrame, decay: float = 0.0015,
                         "odds": odds, "won": won, "pnl": pnl,
                     })
     return pd.DataFrame(results)
+
+
+def run_calibration(df: pd.DataFrame, decay: float = 0.0015,
+                     min_train: int = 200, n_bins: int = 10) -> pd.DataFrame:
+    """
+    Agrupa TODAS las predicciones (no solo las apuestas simuladas) por la
+    probabilidad que el modelo asignó, y compara contra la frecuencia real
+    de acierto en cada grupo. Sirve para saber si las probabilidades del
+    modelo son fiables, independientemente de si baten o no al mercado.
+    """
+    seasons = sorted(df["Season"].dropna().unique())
+    records = []
+
+    for i, test_season in enumerate(seasons):
+        train = df[df["Season"].isin(seasons[:i])]
+        test = df[df["Season"] == test_season]
+        if len(train) < min_train or len(test) == 0:
+            continue
+
+        model = DixonColesModel(decay=decay)
+        model.fit(train)
+
+        for _, row in test.iterrows():
+            home, away = row["HomeTeam"], row["AwayTeam"]
+            if home not in model.teams or away not in model.teams:
+                continue
+            pred = model.predict_match(home, away)
+            actual = row["FTR"]
+            for outcome, p in [("H", pred["P(H)"]), ("D", pred["P(D)"]), ("A", pred["P(A)"])]:
+                records.append({"predicted": p, "actual": 1 if actual == outcome else 0})
+
+    calib_df = pd.DataFrame(records)
+    if calib_df.empty:
+        return calib_df
+
+    calib_df["bin"] = pd.cut(calib_df["predicted"], bins=n_bins, labels=False)
+    summary = calib_df.groupby("bin").agg(
+        predicted_avg=("predicted", "mean"),
+        actual_freq=("actual", "mean"),
+        n=("actual", "size"),
+    ).reset_index(drop=True)
+    return summary

@@ -2,14 +2,18 @@
 Dashboard interactivo — Modelo predictivo Big 5 Ligas Europeas
 Ejecutar con: streamlit run app.py
 """
+import io
+
 import numpy as np
 import pandas as pd
 import streamlit as st
+from scipy.stats import poisson
 
 from data_pipeline_and_model import DixonColesModel, load_league_data
 from generic_poisson_model import GenericPoissonModel
 from elo_ratings import EloTracker
-from backtest import run_walk_forward
+from backtest import run_walk_forward, run_calibration
+from github_sync import get_file, put_file
 
 st.set_page_config(page_title="Big 5 Ligas — Panel de predicción", layout="wide")
 
@@ -94,6 +98,12 @@ def get_backtest(league_code: str, decay: float) -> pd.DataFrame:
     return run_walk_forward(df, decay=decay)
 
 
+@st.cache_data(show_spinner="Calculando calibración del modelo...")
+def get_calibration(league_code: str, decay: float) -> pd.DataFrame:
+    df = get_league_df(league_code)
+    return run_calibration(df, decay=decay)
+
+
 # ---------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------
@@ -116,6 +126,26 @@ if st.sidebar.button("Cerrar sesión"):
     st.session_state["authenticated"] = False
     st.rerun()
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("Actualizar datos")
+uploaded_csv = st.sidebar.file_uploader("Subir CSV de una temporada nueva", type="csv")
+if uploaded_csv is not None:
+    upload_league = st.sidebar.selectbox(
+        "¿A qué liga pertenece?", list(LEAGUES.keys()),
+        format_func=lambda k: LEAGUES[k], key="upload_league_select"
+    )
+    if st.sidebar.button("Guardar en GitHub"):
+        csv_text = uploaded_csv.getvalue().decode("utf-8", errors="replace")
+        ok, msg = put_file(
+            f"data/{uploaded_csv.name}", csv_text,
+            f"Subir {uploaded_csv.name} ({LEAGUES[upload_league]}) desde la app"
+        )
+        if ok:
+            st.sidebar.success(msg + " Tardará 1-2 minutos en desplegarse; luego recarga la página.")
+            get_league_df.clear()
+        else:
+            st.sidebar.error(msg)
+
 df = get_league_df(league_code)
 goals_model = get_goals_model(league_code, decay)
 metric_models = get_metric_models(league_code)
@@ -124,9 +154,10 @@ elo = get_elo(league_code)
 st.title(f"{league_label}")
 st.caption(f"{len(df)} partidos cargados · {df['Date'].min().date()} a {df['Date'].max().date()}")
 
-tab_pred, tab_team, tab_elo, tab_ratings, tab_stats, tab_backtest = st.tabs(
-    ["Predecir partido", "Ficha de equipo", "Ranking Elo",
-     "Ratings por equipo", "Estadísticas de la liga", "Rendimiento histórico"]
+tab_pred, tab_team, tab_elo, tab_ratings, tab_stats, tab_backtest, tab_diary = st.tabs(
+    ["🔮 Predecir partido", "🗂️ Ficha de equipo", "📊 Ranking Elo",
+     "🎯 Ratings por equipo", "📈 Estadísticas de la liga", "🧪 Rendimiento histórico",
+     "📓 Diario de apuestas"]
 )
 
 # ---------------------------------------------------------------
@@ -169,6 +200,36 @@ with tab_pred:
             if home in m.teams and away in m.teams:
                 mp = m.predict_match(home, away)
                 col.metric(label, f"{mp['expected_home']:.1f} — {mp['expected_away']:.1f}")
+
+        # --- Over/Under ---
+        st.markdown("---")
+        st.markdown("**Probabilidades Over/Under**")
+        default_lines = {"Córners": 9.5, "Tiros": 24.5, "Tiros a puerta": 8.5, "Tarjetas amarillas": 3.5}
+        ou_cols = st.columns(len(metric_models))
+        for col, (label, m) in zip(ou_cols, metric_models.items()):
+            if home in m.teams and away in m.teams:
+                mp = m.predict_match(home, away)
+                total_mu = mp["expected_home"] + mp["expected_away"]
+                line = col.number_input(
+                    f"Línea {label}", value=default_lines.get(label, 3.5), step=0.5, key=f"ou_line_{label}"
+                )
+                p_over = 1 - poisson.cdf(line, total_mu)
+                col.metric(f"P(Over {line})", f"{p_over:.1%}")
+
+        # --- Historial cara a cara ---
+        st.markdown("---")
+        st.markdown("**Historial cara a cara**")
+        h2h = df[
+            ((df["HomeTeam"] == home) & (df["AwayTeam"] == away))
+            | ((df["HomeTeam"] == away) & (df["AwayTeam"] == home))
+        ].sort_values("Date", ascending=False).head(5)
+        if h2h.empty:
+            st.caption("No hay enfrentamientos previos entre estos dos equipos en los datos cargados.")
+        else:
+            h2h_display = h2h[["Date", "HomeTeam", "FTHG", "FTAG", "AwayTeam"]].copy()
+            h2h_display["Date"] = h2h_display["Date"].dt.date
+            h2h_display.columns = ["Fecha", "Local", "Goles Local", "Goles Visitante", "Visitante"]
+            st.dataframe(h2h_display, use_container_width=True, hide_index=True)
 
         # --- Comparador de cuotas ---
         st.markdown("---")
@@ -227,7 +288,7 @@ Modelo estadístico, no es una recomendación de apuesta.
 </div>
 </body></html>"""
         st.download_button(
-            "Descargar esta predicción (HTML)",
+            "📥 Descargar esta predicción (HTML)",
             data=html_report,
             file_name=f"prediccion_{home}_vs_{away}.html".replace(" ", "_"),
             mime="text/html",
@@ -335,7 +396,7 @@ with tab_backtest:
 
         if roi < 0:
             st.warning(
-                "ROI negativo: en este backtest, el modelo NO ha batido al mercado de forma "
+                "⚠️ ROI negativo: en este backtest, el modelo NO ha batido al mercado de forma "
                 "consistente en esta liga. Trátalo como información, no como señal para apostar."
             )
         else:
@@ -354,3 +415,90 @@ with tab_backtest:
         ).round(1)
         st.dataframe(season_bt, use_container_width=True)
         st.bar_chart(season_bt["ROI %"])
+
+    st.markdown("---")
+    st.subheader("Calibración del modelo")
+    st.caption(
+        "Agrupa TODAS las predicciones (no solo las apuestas simuladas) según la probabilidad "
+        "que el modelo asignó, y compara contra la frecuencia real de acierto en cada grupo. "
+        "Si el modelo estuviera perfectamente calibrado, la probabilidad media y la frecuencia "
+        "real deberían coincidir en cada fila."
+    )
+    calib = get_calibration(league_code, decay)
+    if calib.empty:
+        st.info("No hay histórico suficiente para calcular la calibración.")
+    else:
+        calib_display = calib.copy()
+        calib_display["predicted_avg"] = (calib_display["predicted_avg"] * 100).round(1)
+        calib_display["actual_freq"] = (calib_display["actual_freq"] * 100).round(1)
+        calib_display.columns = ["Prob. media del modelo (%)", "Frecuencia real de acierto (%)", "Nº predicciones"]
+        st.dataframe(calib_display, use_container_width=True, hide_index=True)
+        chart_data = calib.set_index("predicted_avg")[["actual_freq"]]
+        chart_data.columns = ["Frecuencia real"]
+        st.line_chart(chart_data)
+
+# ---------------------------------------------------------------
+# TAB 7: Diario de apuestas propio
+# ---------------------------------------------------------------
+with tab_diary:
+    st.subheader("Diario de apuestas propio")
+    st.caption(
+        "Registra aquí las apuestas que TÚ haces de verdad (no las simuladas del backtest), "
+        "para comparar tu rendimiento real con el modelo. Se guarda en tu repositorio de GitHub, "
+        "así que necesitas tener configurado el secret GITHUB_TOKEN (ver aviso más abajo si falta)."
+    )
+
+    log_content, _ = get_file("bets_log.csv")
+    if log_content:
+        log_df = pd.read_csv(io.StringIO(log_content))
+    else:
+        log_df = pd.DataFrame(columns=[
+            "fecha", "liga", "local", "visitante", "seleccion", "cuota", "stake", "resultado"
+        ])
+
+    with st.form("nueva_apuesta"):
+        c1, c2, c3 = st.columns(3)
+        f_date = c1.date_input("Fecha")
+        f_liga = c2.selectbox("Liga", list(LEAGUES.values()), key="diary_liga")
+        f_stake = c3.number_input("Stake (unidades)", min_value=0.0, value=1.0, step=0.5)
+
+        c4, c5, c6 = st.columns(3)
+        f_local = c4.text_input("Equipo local")
+        f_visitante = c5.text_input("Equipo visitante")
+        f_seleccion = c6.selectbox("Selección", ["Local", "Empate", "Visitante"])
+
+        c7, c8 = st.columns(2)
+        f_cuota = c7.number_input("Cuota", min_value=1.01, value=2.00, step=0.01)
+        f_resultado = c8.selectbox("Resultado", ["Pendiente", "Ganada", "Perdida"])
+
+        submitted = st.form_submit_button("Guardar apuesta")
+
+    if submitted:
+        new_row = pd.DataFrame([{
+            "fecha": f_date, "liga": f_liga, "local": f_local, "visitante": f_visitante,
+            "seleccion": f_seleccion, "cuota": f_cuota, "stake": f_stake, "resultado": f_resultado,
+        }])
+        log_df = pd.concat([log_df, new_row], ignore_index=True)
+        ok, msg = put_file("bets_log.csv", log_df.to_csv(index=False), "Añadir apuesta desde la app")
+        if ok:
+            st.success("Apuesta guardada.")
+        else:
+            st.error(msg)
+
+    if not log_df.empty:
+        st.markdown("---")
+        st.markdown("**Historial de apuestas**")
+        st.dataframe(log_df, use_container_width=True, hide_index=True)
+
+        resolved = log_df[log_df["resultado"].isin(["Ganada", "Perdida"])].copy()
+        if not resolved.empty:
+            resolved["pnl"] = resolved.apply(
+                lambda r: r["stake"] * (r["cuota"] - 1) if r["resultado"] == "Ganada" else -r["stake"],
+                axis=1,
+            )
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Apuestas resueltas", len(resolved))
+            c2.metric("P&L real", f"{resolved['pnl'].sum():+.1f}u")
+            c3.metric("ROI real", f"{resolved['pnl'].sum() / resolved['stake'].sum():+.1%}")
+    else:
+        st.info("Todavía no has registrado ninguna apuesta.")
