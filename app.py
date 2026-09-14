@@ -19,6 +19,8 @@ from auto_update import update_league, current_season_code
 from auth import authenticate, register_user, load_users, is_admin, delete_user, update_invite_code
 from season_sim import simulate_season
 from team_stats import team_match_averages, METRIC_COLUMNS
+from fixtures_api import fetch_matches_for_date, resolve_team_name
+from visuals import render_prob_bar, render_mini_prob_bar, favorite_badge
 
 st.set_page_config(page_title="Big 5 Ligas — Panel de predicción", layout="wide")
 
@@ -205,6 +207,7 @@ st.title(f"{league_label}")
 st.caption(f"{len(df)} partidos cargados · {df['Date'].min().date()} a {df['Date'].max().date()}")
 
 tab_defs = [
+    ("📅 Partidos del día", "today"),
     ("🔮 Predecir partido", "pred"),
     ("🗂️ Ficha de equipo", "team"),
     ("⚖️ Comparar equipos", "compare"),
@@ -221,6 +224,7 @@ if current_is_admin:
 
 tab_objects = st.tabs([label for label, _ in tab_defs])
 tabs = {key: tab for (label, key), tab in zip(tab_defs, tab_objects)}
+tab_today = tabs["today"]
 tab_pred = tabs["pred"]
 tab_team = tabs["team"]
 tab_compare = tabs["compare"]
@@ -231,6 +235,59 @@ tab_sim = tabs["sim"]
 tab_backtest = tabs["backtest"]
 tab_diary = tabs["diary"]
 tab_admin = tabs.get("admin")
+
+# ---------------------------------------------------------------
+# TAB: Partidos del día (calendario vía football-data.org)
+# ---------------------------------------------------------------
+with tab_today:
+    st.subheader("Partidos del día")
+    st.caption(
+        "Calendario en vivo de las 5 grandes ligas, vía football-data.org "
+        "(no besoccer.es). Necesita el secret FOOTBALL_DATA_TOKEN configurado."
+    )
+
+    import datetime as _dt
+    picked_date = st.date_input("Fecha", value=_dt.date.today(), key="today_date")
+
+    if st.button("Buscar partidos", type="primary", key="today_search_btn"):
+        with st.spinner("Consultando football-data.org..."):
+            matches, err = fetch_matches_for_date(picked_date.strftime("%Y-%m-%d"))
+        st.session_state["today_matches"] = matches
+        st.session_state["today_error"] = err
+
+    if st.session_state.get("today_error"):
+        st.error(st.session_state["today_error"])
+
+    matches_today = st.session_state.get("today_matches")
+    if matches_today is not None:
+        if not matches_today:
+            st.info("No hay partidos programados de las 5 grandes ligas para esa fecha.")
+        else:
+            st.success(f"{len(matches_today)} partidos encontrados.")
+            for m in matches_today:
+                lg = m["league_code"]
+                league_teams = sorted(get_goals_model(lg, decay).teams)
+                home = resolve_team_name(m["home_raw"], league_teams)
+                away = resolve_team_name(m["away_raw"], league_teams)
+
+                with st.container(border=True):
+                    top1, top2 = st.columns([4, 1])
+                    top1.markdown(f"**{LEAGUES[lg]}**")
+                    top2.markdown(f"🕒 {m['time']}")
+
+                    if home is None or away is None:
+                        st.markdown(f"**{m['home_raw']}** vs **{m['away_raw']}**")
+                        st.caption(
+                            "No he podido emparejar uno de estos equipos con nuestros datos "
+                            "históricos (nombre distinto). No se puede calcular predicción."
+                        )
+                        continue
+
+                    model_today = get_goals_model(lg, decay)
+                    pred_today = model_today.predict_match(home, away)
+                    st.markdown(f"### {home}  vs  {away}")
+                    render_mini_prob_bar(pred_today["P(H)"], pred_today["P(D)"], pred_today["P(A)"])
+                    st.caption(favorite_badge(pred_today["P(H)"], pred_today["P(D)"], pred_today["P(A)"], home, away))
 
 # ---------------------------------------------------------------
 # TAB 1: Predicción de partido (+ comparador de cuotas + exportar)
@@ -256,6 +313,7 @@ with tab_pred:
         c1.metric("P(Local)", f"{pred['P(H)']:.1%}")
         c2.metric("P(Empate)", f"{pred['P(D)']:.1%}")
         c3.metric("P(Visitante)", f"{pred['P(A)']:.1%}")
+        render_prob_bar(pred["P(H)"], pred["P(D)"], pred["P(A)"], home, away)
 
         st.markdown(f"**Goles esperados:** {pred['lambda_home']:.2f} — {pred['lambda_away']:.2f}")
 
@@ -468,6 +526,7 @@ with tab_compare:
         pc1.metric(f"Gana {team_a}", f"{pred_cmp['P(H)']:.1%}")
         pc2.metric("Empate", f"{pred_cmp['P(D)']:.1%}")
         pc3.metric(f"Gana {team_b}", f"{pred_cmp['P(A)']:.1%}")
+        render_prob_bar(pred_cmp["P(H)"], pred_cmp["P(D)"], pred_cmp["P(A)"], team_a, team_b)
 
 # ---------------------------------------------------------------
 # TAB 3: Ranking Elo
