@@ -14,6 +14,7 @@ from generic_poisson_model import GenericPoissonModel
 from elo_ratings import EloTracker
 from backtest import run_walk_forward, run_calibration
 from github_sync import get_file, put_file
+from auto_update import update_league, current_season_code
 
 st.set_page_config(page_title="Big 5 Ligas — Panel de predicción", layout="wide")
 
@@ -128,23 +129,35 @@ if st.sidebar.button("Cerrar sesión"):
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Actualizar datos")
-uploaded_csv = st.sidebar.file_uploader("Subir CSV de una temporada nueva", type="csv")
-if uploaded_csv is not None:
-    upload_league = st.sidebar.selectbox(
-        "¿A qué liga pertenece?", list(LEAGUES.keys()),
-        format_func=lambda k: LEAGUES[k], key="upload_league_select"
-    )
-    if st.sidebar.button("Guardar en GitHub"):
-        csv_text = uploaded_csv.getvalue().decode("utf-8", errors="replace")
-        ok, msg = put_file(
-            f"data/{uploaded_csv.name}", csv_text,
-            f"Subir {uploaded_csv.name} ({LEAGUES[upload_league]}) desde la app"
+st.sidebar.caption(f"Temporada en curso: {current_season_code()}")
+
+if st.sidebar.button(f"🔄 Actualizar {LEAGUES[league_code]} ahora"):
+    with st.spinner(f"Descargando datos de {LEAGUES[league_code]} desde football-data.co.uk..."):
+        ok, msg = update_league(league_code)
+    if ok:
+        st.sidebar.success(msg + " Tardará 1-2 minutos en desplegarse; luego recarga la página.")
+        get_league_df.clear()
+    else:
+        st.sidebar.error(msg)
+
+with st.sidebar.expander("Subir CSV manualmente (alternativa)"):
+    uploaded_csv = st.file_uploader("Subir CSV de una temporada nueva", type="csv")
+    if uploaded_csv is not None:
+        upload_league = st.selectbox(
+            "¿A qué liga pertenece?", list(LEAGUES.keys()),
+            format_func=lambda k: LEAGUES[k], key="upload_league_select"
         )
-        if ok:
-            st.sidebar.success(msg + " Tardará 1-2 minutos en desplegarse; luego recarga la página.")
-            get_league_df.clear()
-        else:
-            st.sidebar.error(msg)
+        if st.button("Guardar en GitHub", key="manual_upload_btn"):
+            csv_text = uploaded_csv.getvalue().decode("utf-8", errors="replace")
+            ok, msg = put_file(
+                f"data/{uploaded_csv.name}", csv_text,
+                f"Subir {uploaded_csv.name} ({LEAGUES[upload_league]}) desde la app"
+            )
+            if ok:
+                st.success(msg + " Tardará 1-2 minutos en desplegarse; luego recarga la página.")
+                get_league_df.clear()
+            else:
+                st.error(msg)
 
 df = get_league_df(league_code)
 goals_model = get_goals_model(league_code, decay)
