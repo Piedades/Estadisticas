@@ -20,7 +20,7 @@ from auth import authenticate, register_user, load_users, is_admin, delete_user,
 from season_sim import simulate_season
 from team_stats import team_match_averages, METRIC_COLUMNS
 from fixtures_api import fetch_matches_for_date, resolve_team_name
-from visuals import render_prob_bar, render_mini_prob_bar, favorite_badge
+from visuals import render_prob_bar, render_mini_prob_bar, favorite_badge, render_form_badges
 
 st.set_page_config(page_title="Big 5 Ligas — Panel de predicción", layout="wide")
 
@@ -33,7 +33,8 @@ if "current_user" not in st.session_state:
     st.session_state["current_user"] = None
 
 if not st.session_state["authenticated"]:
-    st.title("🔒 Big 5 Ligas — Acceso")
+    st.title("⚽ Big 5 Ligas")
+    st.caption("🔒 Acceso privado — inicia sesión o crea tu cuenta para entrar.")
 
     login_tab, register_tab = st.tabs(["Iniciar sesión", "Crear cuenta"])
 
@@ -487,7 +488,7 @@ with tab_team:
                 gf, gc = row["FTAG"], row["FTHG"]
             letters.append("V" if gf > gc else "E" if gf == gc else "D")
         puntos = sum(3 if r == "V" else 1 if r == "E" else 0 for r in letters)
-        st.markdown(f"### {'  '.join(letters)}")
+        render_form_badges(letters)
         st.caption(f"{puntos} de {len(letters) * 3} puntos posibles en los últimos {len(letters)} partidos.")
 
     st.markdown("---")
@@ -551,10 +552,15 @@ with tab_compare:
 # TAB 3: Ranking Elo
 # ---------------------------------------------------------------
 with tab_elo:
-    st.subheader("Ranking Elo actual")
+    st.subheader("📊 Ranking Elo actual")
     table = elo.current_table()
     table["elo"] = table["elo"].round(0).astype(int)
-    st.dataframe(table, use_container_width=True, hide_index=True)
+    table = table.reset_index(drop=True)
+    medals = ["🥇", "🥈", "🥉"] + [str(i) for i in range(4, len(table) + 1)]
+    table.insert(0, "Pos", medals[:len(table)])
+    table.columns = ["Pos", "Equipo", "Elo"]
+    styled_elo = table.style.background_gradient(subset=["Elo"], cmap="RdYlGn")
+    st.dataframe(styled_elo, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------
 # TAB 4: Ratings por equipo (ataque/defensa)
@@ -578,8 +584,13 @@ with tab_ratings:
             "En contra (por partido)": round(contra, 2),
         })
     ratings = pd.DataFrame(rows).sort_values("A favor (por partido)", ascending=False).reset_index(drop=True)
-    st.caption("Promedio real por partido. Más alto en \"a favor\" = genera más. Más bajo en \"en contra\" = concede menos.")
-    st.dataframe(ratings, use_container_width=True, hide_index=True)
+    st.caption("🟢 Promedio real por partido. Más alto en \"a favor\" = genera más. Más bajo en \"en contra\" = concede menos (más verde).")
+    styled_ratings = (
+        ratings.style
+        .background_gradient(subset=["A favor (por partido)"], cmap="Greens")
+        .background_gradient(subset=["En contra (por partido)"], cmap="RdYlGn_r")
+    )
+    st.dataframe(styled_ratings, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------
 # TAB 5: Estadísticas generales de la liga
@@ -597,7 +608,8 @@ with tab_stats:
             "% Visitante": (g["FTR"] == "A").mean() * 100,
         })
     ).round(1)
-    st.dataframe(season_stats, use_container_width=True)
+    styled_season = season_stats.style.background_gradient(subset=["Goles/partido"], cmap="YlOrRd")
+    st.dataframe(styled_season, use_container_width=True)
 
     st.bar_chart(season_stats["Goles/partido"])
 
@@ -631,7 +643,13 @@ with tab_sim:
         sim_display["P(Puestos europeos)"] = (sim_display["P(Puestos europeos)"] * 100).round(1)
         sim_display["P(Descenso)"] = (sim_display["P(Descenso)"] * 100).round(1)
         sim_display.columns = ["Equipo", "Puntos actuales", "P(Campeón) %", "P(Puestos europeos) %", "P(Descenso) %"]
-        st.dataframe(sim_display, use_container_width=True, hide_index=True)
+        styled_sim = (
+            sim_display.style
+            .background_gradient(subset=["P(Campeón) %"], cmap="YlOrRd")
+            .background_gradient(subset=["P(Puestos europeos) %"], cmap="Blues")
+            .background_gradient(subset=["P(Descenso) %"], cmap="Reds")
+        )
+        st.dataframe(styled_sim, use_container_width=True, hide_index=True)
         st.bar_chart(sim_display.set_index("Equipo")["P(Campeón) %"])
 
 # ---------------------------------------------------------------
@@ -762,7 +780,17 @@ with tab_diary:
     if not log_df.empty:
         st.markdown("---")
         st.markdown("**Tu historial de apuestas**")
-        st.dataframe(log_df.drop(columns=["usuario"]), use_container_width=True, hide_index=True)
+
+        def _color_resultado(val):
+            if val == "Ganada":
+                return "background-color: #14532d; color: white; font-weight: 600;"
+            elif val == "Perdida":
+                return "background-color: #7f1d1d; color: white; font-weight: 600;"
+            return "background-color: #78716c; color: white;"
+
+        log_display = log_df.drop(columns=["usuario"])
+        styled_log = log_display.style.map(_color_resultado, subset=["resultado"])
+        st.dataframe(styled_log, use_container_width=True, hide_index=True)
 
         resolved = log_df[log_df["resultado"].isin(["Ganada", "Perdida"])].copy()
         if not resolved.empty:
