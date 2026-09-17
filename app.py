@@ -22,7 +22,7 @@ from team_stats import team_match_averages, METRIC_COLUMNS
 from fixtures_api import fetch_matches_for_date, resolve_team_name
 from visuals import render_prob_bar, render_mini_prob_bar, favorite_badge, render_form_badges
 
-st.set_page_config(page_title="Big 5 Ligas — Panel de predicción", layout="wide")
+st.set_page_config(page_title="Pirujeando", layout="wide")
 
 # ---------------------------------------------------------------
 # Toques de estilo extra (ademas del tema en .streamlit/config.toml)
@@ -67,7 +67,7 @@ if "current_user" not in st.session_state:
     st.session_state["current_user"] = None
 
 if not st.session_state["authenticated"]:
-    st.title("⚽ Big 5 Ligas")
+    st.title("⚽ Pirujeando")
     st.caption("🔒 Acceso privado — inicia sesión o crea tu cuenta para entrar.")
 
     login_tab, register_tab = st.tabs(["Iniciar sesión", "Crear cuenta"])
@@ -174,7 +174,7 @@ def get_season_sim(league_code: str, decay: float, season: str, top_europe: int,
 # ---------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------
-st.sidebar.title("⚽ Big 5 Ligas")
+st.sidebar.title("⚽ Pirujeando")
 league_label = st.sidebar.selectbox("Liga", list(LEAGUES.values()), key="league_select")
 league_code = [k for k, v in LEAGUES.items() if v == league_label][0]
 
