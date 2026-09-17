@@ -214,6 +214,23 @@ if st.sidebar.button(f"🔄 Actualizar {LEAGUES[league_code]} ahora"):
     else:
         st.sidebar.error(msg)
 
+if st.sidebar.button("🔄 Actualizar las 5 grandes ligas"):
+    results = []
+    progress = st.sidebar.progress(0.0)
+    for i, (code, name) in enumerate(LEAGUES.items()):
+        with st.spinner(f"Descargando datos de {name} desde football-data.co.uk..."):
+            ok_i, msg_i = update_league(code)
+            results.append((name, ok_i, msg_i))
+        progress.progress((i + 1) / len(LEAGUES))
+    progress.empty()
+    for name, ok_i, msg_i in results:
+        if ok_i:
+            st.sidebar.success(f"{name}: {msg_i}")
+        else:
+            st.sidebar.error(f"{name}: {msg_i}")
+    get_league_df.clear()
+    st.sidebar.info("Tardará 1-2 minutos en desplegarse; luego recarga la página.")
+
 with st.sidebar.expander("Subir CSV manualmente (alternativa)"):
     uploaded_csv = st.file_uploader("Subir CSV de una temporada nueva", type="csv")
     if uploaded_csv is not None:
