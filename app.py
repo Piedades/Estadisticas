@@ -25,6 +25,40 @@ from visuals import render_prob_bar, render_mini_prob_bar, favorite_badge, rende
 st.set_page_config(page_title="Big 5 Ligas — Panel de predicción", layout="wide")
 
 # ---------------------------------------------------------------
+# Toques de estilo extra (ademas del tema en .streamlit/config.toml)
+# ---------------------------------------------------------------
+st.markdown("""
+<style>
+[data-testid="stVerticalBlockBorderWrapper"] > div {
+    border-radius: 14px !important;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+            }
+            [data-testid="stVerticalBlockBorderWrapper"] > div:hover {
+                transform: translateY(-2px);
+                    box-shadow: 0 8px 22px rgba(0,0,0,0.45);
+                    }
+                    [data-testid="stMetric"] {
+                        background: rgba(255,255,255,0.035);
+                            border-radius: 12px;
+                                padding: 12px 14px;
+                                    border: 1px solid rgba(255,255,255,0.07);
+                                    }
+                                    .stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+                                        border-radius: 10px !important;
+                                            font-weight: 600 !important;
+                                            }
+                                            [data-testid="stTabs"] button {
+                                                border-radius: 8px 8px 0 0;
+                                                }
+                                                [data-testid="stSidebar"] {
+                                                    background: linear-gradient(180deg, #161b26 0%, #11151d 100%);
+                                                    }
+                                                    </style>
+                                                    """, unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------
 # Acceso con usuarios individuales
 # ---------------------------------------------------------------
 if "authenticated" not in st.session_state:
