@@ -267,12 +267,9 @@ tab_defs = [
     ("🎯 Ratings por equipo", "ratings"),
     ("📈 Estadísticas de la liga", "stats"),
     ("🎲 Simulador de temporada", "sim"),
-    ("🧪 Rendimiento histórico", "backtest"),
-    ("📓 Diario de apuestas", "diary"),
+    ("🗄️ Más", "more"),
 ]
 current_is_admin = is_admin(st.session_state["current_user"])
-if current_is_admin:
-    tab_defs.append(("🛠️ Administración", "admin"))
 
 tab_objects = st.tabs([label for label, _ in tab_defs])
 tabs = {key: tab for (label, key), tab in zip(tab_defs, tab_objects)}
@@ -284,9 +281,17 @@ tab_elo = tabs["elo"]
 tab_ratings = tabs["ratings"]
 tab_stats = tabs["stats"]
 tab_sim = tabs["sim"]
-tab_backtest = tabs["backtest"]
-tab_diary = tabs["diary"]
-tab_admin = tabs.get("admin")
+tab_more = tabs["more"]
+
+with tab_more:
+    more_defs = [("🧪 Rendimiento histórico", "backtest"), ("📓 Diario de apuestas", "diary")]
+    if current_is_admin:
+        more_defs.append(("🛠️ Administración", "admin"))
+    more_objects = st.tabs([label for label, _ in more_defs])
+    more_tabs = {key: tab for (label, key), tab in zip(more_defs, more_objects)}
+    tab_backtest = more_tabs["backtest"]
+    tab_diary = more_tabs["diary"]
+    tab_admin = more_tabs.get("admin")
 
 # ---------------------------------------------------------------
 # TAB: Partidos del día (calendario vía football-data.org)
@@ -638,6 +643,7 @@ with tab_ratings:
     st.caption("🟢 Promedio real por partido. Más alto en \"a favor\" = genera más. Más bajo en \"en contra\" = concede menos (más verde).")
     styled_ratings = (
         ratings.style
+        .format({"A favor (por partido)": "{:.2f}", "En contra (por partido)": "{:.2f}"})
         .background_gradient(subset=["A favor (por partido)"], cmap="Greens")
         .background_gradient(subset=["En contra (por partido)"], cmap="RdYlGn_r")
     )
@@ -659,7 +665,9 @@ with tab_stats:
             "% Visitante": (g["FTR"] == "A").mean() * 100,
         })
     ).round(1)
-    styled_season = season_stats.style.background_gradient(subset=["Goles/partido"], cmap="YlOrRd")
+    styled_season = season_stats.style.format({
+        "Goles/partido": "{:.2f}", "% Local": "{:.1f}", "% Empate": "{:.1f}", "% Visitante": "{:.1f}",
+    }).background_gradient(subset=["Goles/partido"], cmap="YlOrRd")
     st.dataframe(styled_season, use_container_width=True)
 
     st.bar_chart(season_stats["Goles/partido"])
@@ -696,6 +704,7 @@ with tab_sim:
         sim_display.columns = ["Equipo", "Puntos actuales", "P(Campeón) %", "P(Puestos europeos) %", "P(Descenso) %"]
         styled_sim = (
             sim_display.style
+            .format({"P(Campeón) %": "{:.1f}", "P(Puestos europeos) %": "{:.1f}", "P(Descenso) %": "{:.1f}"})
             .background_gradient(subset=["P(Campeón) %"], cmap="YlOrRd")
             .background_gradient(subset=["P(Puestos europeos) %"], cmap="Blues")
             .background_gradient(subset=["P(Descenso) %"], cmap="Reds")
@@ -840,7 +849,7 @@ with tab_diary:
             return "background-color: #78716c; color: white;"
 
         log_display = log_df.drop(columns=["usuario"])
-        styled_log = log_display.style.map(_color_resultado, subset=["resultado"])
+        styled_log = log_display.style.format({"cuota": "{:.2f}", "stake": "{:.2f}"}).map(_color_resultado, subset=["resultado"])
         st.dataframe(styled_log, use_container_width=True, hide_index=True)
 
         resolved = log_df[log_df["resultado"].isin(["Ganada", "Perdida"])].copy()
