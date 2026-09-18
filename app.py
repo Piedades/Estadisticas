@@ -22,6 +22,7 @@ from team_stats import team_match_averages, METRIC_COLUMNS
 from fixtures_api import fetch_matches_for_date, resolve_team_name
 from xpts import expected_points_table
 from favorites import get_user_favorites, save_user_favorites
+from champions import predict_cross_goals, predict_cross_generic
 from visuals import render_prob_bar, render_mini_prob_bar, favorite_badge, render_form_badges
 
 st.set_page_config(page_title="Pirujeando", layout="wide")
@@ -272,6 +273,7 @@ tab_defs = [
     ("🔮 Predecir partido", "pred"),
     ("🗂️ Ficha de equipo", "team"),
     ("⚖️ Comparar equipos", "compare"),
+    ("🏆 Champions", "champions"),
     ("📊 Ranking Elo", "elo"),
     ("🎯 Ratings por equipo", "ratings"),
     ("📈 Estadísticas de la liga", "stats"),
@@ -286,6 +288,7 @@ tab_today = tabs["today"]
 tab_pred = tabs["pred"]
 tab_team = tabs["team"]
 tab_compare = tabs["compare"]
+tab_champions = tabs["champions"]
 tab_elo = tabs["elo"]
 tab_ratings = tabs["ratings"]
 tab_stats = tabs["stats"]
@@ -625,6 +628,104 @@ with tab_compare:
         pc2.metric("Empate", f"{pred_cmp['P(D)']:.1%}")
         pc3.metric(f"Gana {team_b}", f"{pred_cmp['P(A)']:.1%}")
         render_prob_bar(pred_cmp["P(H)"], pred_cmp["P(D)"], pred_cmp["P(A)"], team_a, team_b)
+
+# ---------------------------------------------------------------
+# TAB: Champions (cruces entre equipos de ligas distintas)
+# ---------------------------------------------------------------
+with tab_champions:
+    st.subheader("🏆 Cruce de Champions")
+    st.caption(
+        "Predicción de un partido entre dos equipos de ligas distintas, usando el "
+        "rendimiento que cada uno tiene en su propia liga. No simula la fase de "
+        "liga ni las eliminatorias — solo el partido concreto que elijas."
+    )
+    st.info(
+        "⚠️ El nivel de goles de cada liga ya está incorporado en su propio modelo, "
+        "pero la diferencia de calidad \"top a top\" entre ligas no se corrige: un "
+        "equipo puntero de una liga más floja puede salir mejor parado de lo que "
+        "sería en la realidad frente a un rival de una liga más competitiva. Trata "
+        "estos números con más cautela que una predicción dentro de la misma liga."
+    )
+
+    ch1, ch2 = st.columns(2)
+    with ch1:
+        st.markdown("**Equipo local**")
+        champ_home_league_label = st.selectbox(
+            "Liga", list(LEAGUES.values()), key="champions_home_league"
+        )
+        champ_home_league_code = [k for k, v in LEAGUES.items() if v == champ_home_league_label][0]
+        champ_home_model = get_goals_model(champ_home_league_code, decay)
+        champ_home_metrics = get_metric_models(champ_home_league_code)
+        champ_home_team = st.selectbox(
+            "Equipo", sorted(champ_home_model.teams), key="champions_home_team"
+        )
+    with ch2:
+        st.markdown("**Equipo visitante**")
+        default_away_idx = 1 if len(LEAGUES) > 1 else 0
+        champ_away_league_label = st.selectbox(
+            "Liga", list(LEAGUES.values()), index=default_away_idx, key="champions_away_league"
+        )
+        champ_away_league_code = [k for k, v in LEAGUES.items() if v == champ_away_league_label][0]
+        champ_away_model = get_goals_model(champ_away_league_code, decay)
+        champ_away_metrics = get_metric_models(champ_away_league_code)
+        champ_away_team = st.selectbox(
+            "Equipo", sorted(champ_away_model.teams), key="champions_away_team"
+        )
+
+    if st.button("Calcular predicción", type="primary", key="champions_predict_btn"):
+        st.session_state["champions_show"] = True
+
+    if st.session_state.get("champions_show"):
+        pred_champ = predict_cross_goals(
+            champ_home_model, champ_home_team, champ_away_model, champ_away_team
+        )
+
+        st.subheader(f"{champ_home_team} vs {champ_away_team}")
+        chc1, chc2, chc3 = st.columns(3)
+        chc1.metric("P(Local)", f"{pred_champ['P(H)']:.1%}")
+        chc2.metric("P(Empate)", f"{pred_champ['P(D)']:.1%}")
+        chc3.metric("P(Visitante)", f"{pred_champ['P(A)']:.1%}")
+        render_prob_bar(
+            pred_champ["P(H)"], pred_champ["P(D)"], pred_champ["P(A)"],
+            champ_home_team, champ_away_team,
+        )
+
+        st.markdown(
+            f"**Goles esperados:** {pred_champ['lambda_home']:.2f} — {pred_champ['lambda_away']:.2f}"
+        )
+
+        sm_champ = pred_champ["score_matrix"]
+        idx_champ = np.unravel_index(np.argmax(sm_champ), sm_champ.shape)
+        over25_champ = 1 - sum(
+            sm_champ[i][j]
+            for i in range(sm_champ.shape[0])
+            for j in range(sm_champ.shape[1])
+            if i + j <= 2
+        )
+        st.markdown(
+            f"**Marcador más probable:** {idx_champ[0]}-{idx_champ[1]} "
+            f"({sm_champ[idx_champ]:.1%})"
+        )
+        st.markdown(f"**P(Over 2.5 goles):** {over25_champ:.1%}")
+
+        st.markdown("---")
+        st.markdown("**Otras métricas esperadas (a favor — en contra)**")
+        common_metrics = [m for m in champ_home_metrics if m in champ_away_metrics]
+        if not common_metrics:
+            st.caption("No hay métricas en común entre estas dos ligas.")
+        else:
+            metric_cols = st.columns(len(common_metrics))
+            for col, label in zip(metric_cols, common_metrics):
+                mh = champ_home_metrics[label]
+                ma = champ_away_metrics[label]
+                if champ_home_team in mh.teams and champ_away_team in ma.teams:
+                    mp_champ = predict_cross_generic(mh, champ_home_team, ma, champ_away_team)
+                    col.metric(
+                        label,
+                        f"{mp_champ['expected_home']:.1f} — {mp_champ['expected_away']:.1f}",
+                    )
+                else:
+                    col.caption(f"{label}: sin datos suficientes")
 
 # ---------------------------------------------------------------
 # TAB 3: Ranking Elo
