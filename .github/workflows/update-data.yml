@@ -1,0 +1,40 @@
+name: Actualizar datos de las ligas
+
+on:
+  schedule:
+    # Todos los días a las 05:00 UTC
+    - cron: "0 5 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install requests
+
+      - name: Descargar datos actualizados de football-data.co.uk
+        run: python scripts/update_data_ci.py
+
+      - name: Commitear y subir cambios si los hay
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "Sin cambios que commitear."
+          else
+            git commit -m "Actualizar datos automáticamente ($(date -u +'%Y-%m-%d'))"
+            git push
+          fi
