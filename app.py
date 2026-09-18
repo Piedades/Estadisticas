@@ -20,6 +20,8 @@ from auth import authenticate, register_user, load_users, is_admin, delete_user,
 from season_sim import simulate_season
 from team_stats import team_match_averages, METRIC_COLUMNS
 from fixtures_api import fetch_matches_for_date, resolve_team_name
+from xpts import expected_points_table
+from favorites import get_user_favorites, save_user_favorites
 from visuals import render_prob_bar, render_mini_prob_bar, favorite_badge, render_form_badges
 
 st.set_page_config(page_title="Pirujeando", layout="wide")
@@ -169,6 +171,13 @@ def get_calibration(league_code: str, decay: float) -> pd.DataFrame:
 def get_season_sim(league_code: str, decay: float, season: str, top_europe: int, relegation: int) -> pd.DataFrame:
     df = get_league_df(league_code)
     return simulate_season(df, season, decay=decay, n_sims=1500, top_europe=top_europe, relegation=relegation)
+
+
+@st.cache_data(show_spinner="Calculando puntos esperados (xPts)...")
+def get_xpts(league_code: str, decay: float, season: str) -> pd.DataFrame:
+    df = get_league_df(league_code)
+    model = get_goals_model(league_code, decay)
+    return expected_points_table(df, season, model)
 
 
 # ---------------------------------------------------------------
@@ -506,6 +515,19 @@ Modelo estadístico, no es una recomendación de apuesta.
 with tab_team:
     team_choice = st.selectbox("Equipo", sorted(goals_model.teams), key="team_profile")
 
+    current_user = st.session_state["current_user"]
+    fav_teams = get_user_favorites(current_user, league_code)
+    is_fav = team_choice in fav_teams
+    if st.button("💛 Quitar de favoritos" if is_fav else "🤍 Marcar como favorito", key="fav_toggle_btn"):
+        new_favs = [t for t in fav_teams if t != team_choice] if is_fav else fav_teams + [team_choice]
+        ok, msg = save_user_favorites(current_user, league_code, new_favs)
+        if ok:
+            st.rerun()
+        else:
+            st.error(f"No se pudo guardar el favorito: {msg}")
+    if fav_teams:
+        st.caption("⭐ Tus favoritos en esta liga: " + ", ".join(fav_teams))
+
     elo_table = elo.current_table()
     elo_row = elo_table[elo_table["team"] == team_choice]
     elo_value = int(elo_row["elo"].iloc[0]) if not elo_row.empty else None
@@ -672,6 +694,26 @@ with tab_stats:
 
     st.bar_chart(season_stats["Goles/partido"])
 
+    st.markdown("---")
+    st.subheader("Puntos esperados (xPts) — temporada en curso")
+    st.caption(
+        "Compara los puntos reales de cada equipo con los que 'debería' tener según las "
+        "probabilidades del modelo en cada partido ya jugado. Un equipo muy por debajo de su "
+        "xPts puede estar rindiendo peor de lo que sugiere su juego (y al revés). El modelo ya "
+        "ha visto estos partidos al entrenarse, así que es una lectura retrospectiva, no una "
+        "predicción a ciegas."
+    )
+    current_season_stats = sorted(df["Season"].dropna().unique())[-1]
+    xpts_table = get_xpts(league_code, decay, current_season_stats)
+    if xpts_table.empty:
+        st.info("No hay datos suficientes para calcular xPts en la temporada actual.")
+    else:
+        styled_xpts = xpts_table.style.format({
+            "xPts": "{:.1f}", "Diferencia": "{:+.1f}",
+        }).background_gradient(subset=["Diferencia"], cmap="RdYlGn")
+        st.dataframe(styled_xpts, use_container_width=True, hide_index=True)
+        st.caption(f"Temporada {current_season_stats}. Diferencia = Puntos reales − xPts.")
+
 # ---------------------------------------------------------------
 # TAB: Simulador de temporada completa (Monte Carlo)
 # ---------------------------------------------------------------
@@ -760,6 +802,23 @@ with tab_backtest:
         ).round(1)
         st.dataframe(season_bt, use_container_width=True)
         st.bar_chart(season_bt["ROI %"])
+
+        st.markdown("**Evolución mensual**")
+        bt_monthly = bt.copy()
+        bt_monthly["mes"] = pd.to_datetime(bt_monthly["date"]).dt.to_period("M").astype(str)
+        monthly_bt = bt_monthly.groupby("mes").apply(
+            lambda g: pd.Series({
+                "Apuestas": len(g),
+                "Acierto %": g["won"].mean() * 100,
+                "ROI %": g["pnl"].sum() / len(g) * 100,
+            })
+        ).round(1)
+        st.dataframe(monthly_bt, use_container_width=True)
+        st.line_chart(monthly_bt["ROI %"])
+        st.caption(
+            "ROI mes a mes: útil para ver si el modelo lleva una racha buena o mala reciente, "
+            "más allá del agregado por temporada."
+        )
 
     st.markdown("---")
     st.subheader("Calibración del modelo")

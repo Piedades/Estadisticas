@@ -11,7 +11,11 @@ from datetime import date
 
 import requests
 
-from github_sync import put_file
+# Import diferido a propósito (dentro de update_league, no aquí arriba):
+# github_sync importa streamlit, que no está disponible cuando este módulo
+# se usa desde el script standalone de GitHub Actions (scripts/update_data_ci.py),
+# que solo necesita current_season_code()/fetch_league_csv() y no depende de
+# Streamlit ni de st.secrets.
 
 BASE_URL = "https://www.football-data.co.uk/mmz4281"
 
@@ -46,6 +50,8 @@ def fetch_league_csv(league_code: str, season_code: str = None) -> str:
 def update_league(league_code: str):
     """Descarga y sube a GitHub los datos más recientes de una liga.
     Devuelve (ok: bool, mensaje: str)."""
+    from github_sync import put_file
+
     filename = CURRENT_SEASON_FILE.get(league_code)
     if filename is None:
         return False, f"No sé en qué archivo guardar la liga {league_code}."
