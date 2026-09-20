@@ -62,47 +62,16 @@ background: linear-gradient(180deg, #eef1f6 0%, #e3e7ee 100%);
 
 
 # ---------------------------------------------------------------
-# Acceso con usuarios individuales
+# Acceso — login desactivado a propósito: la app es de uso personal
+# y así se puede trabajar en ella (incl. los botones que escriben en
+# GitHub) sin depender de que alguien inicie sesión primero.
+# El sistema de usuarios (auth.py) se deja intacto por si se quiere
+# volver a activar en el futuro; basta con restaurar este bloque.
 # ---------------------------------------------------------------
 if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
+    st.session_state["authenticated"] = True
 if "current_user" not in st.session_state:
-    st.session_state["current_user"] = None
-
-if not st.session_state["authenticated"]:
-    st.title("⚽ Pirujeando")
-    st.caption("🔒 Acceso privado — inicia sesión o crea tu cuenta para entrar.")
-
-    login_tab, register_tab = st.tabs(["Iniciar sesión", "Crear cuenta"])
-
-    with login_tab:
-        with st.form("login_form"):
-            login_user = st.text_input("Usuario")
-            login_pwd = st.text_input("Contraseña", type="password")
-            login_submit = st.form_submit_button("Entrar")
-        if login_submit:
-            if authenticate(login_user, login_pwd):
-                st.session_state["authenticated"] = True
-                st.session_state["current_user"] = login_user.strip().lower()
-                st.rerun()
-            else:
-                st.error("Usuario o contraseña incorrectos.")
-
-    with register_tab:
-        st.caption("Necesitas el código de invitación para crear una cuenta nueva.")
-        with st.form("register_form"):
-            new_user = st.text_input("Elige un usuario")
-            new_pwd = st.text_input("Elige una contraseña (mínimo 6 caracteres)", type="password")
-            invite_code = st.text_input("Código de invitación", type="password")
-            register_submit = st.form_submit_button("Crear cuenta")
-        if register_submit:
-            ok, msg = register_user(new_user, new_pwd, invite_code)
-            if ok:
-                st.success(msg)
-            else:
-                st.error(msg)
-
-    st.stop()
+    st.session_state["current_user"] = "piedades"
 
 LEAGUES = {
     "SP1": "España — LaLiga",
@@ -205,13 +174,6 @@ st.sidebar.caption(
     "Modelo Poisson / Dixon-Coles entrenado con tus datos locales de football-data.co.uk. "
     "Nada de esto sale de tu ordenador."
 )
-
-st.sidebar.markdown("---")
-st.sidebar.caption(f"Sesión: **{st.session_state['current_user']}**")
-if st.sidebar.button("Cerrar sesión"):
-    st.session_state["authenticated"] = False
-    st.session_state["current_user"] = None
-    st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Actualizar datos")
