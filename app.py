@@ -217,16 +217,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("Actualizar datos")
 st.sidebar.caption(f"Temporada en curso: {current_season_code()}")
 
-if st.sidebar.button(f"🔄 Actualizar {LEAGUES[league_code]} ahora"):
-    with st.spinner(f"Descargando datos de {LEAGUES[league_code]} desde football-data.co.uk..."):
-        ok, msg = update_league(league_code)
-    if ok:
-        st.sidebar.success(msg + " Tardará 1-2 minutos en desplegarse; luego recarga la página.")
-        get_league_df.clear()
-    else:
-        st.sidebar.error(msg)
-
-if st.sidebar.button("🔄 Actualizar las 5 grandes ligas"):
+if st.sidebar.button("🔄 Actualizar todas las ligas"):
     results = []
     progress = st.sidebar.progress(0.0)
     for i, (code, name) in enumerate(LEAGUES.items()):
