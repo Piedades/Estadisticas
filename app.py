@@ -335,6 +335,9 @@ with tab_today:
                     if home is None or away is None:
                         st.markdown(f"**{m['home_raw']}** vs **{m['away_raw']}**")
                         st.caption(
+                            f"[DEBUG2 lg={lg!r} n_teams={len(league_teams)} "
+                            f"'Malaga' in list={'Malaga' in league_teams} "
+                            f"teams={league_teams!r}] "
                             f"[DEBUG home_raw={m['home_raw']!r} -> {home!r} | "
                             f"away_raw={m['away_raw']!r} -> {away!r}] "
                             "No he podido emparejar uno de estos equipos con nuestros datos "
