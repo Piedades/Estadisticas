@@ -46,7 +46,13 @@ def fetch_league_csv(league_code: str, season_code: str = None) -> str:
     url = f"{BASE_URL}/{season_code}/{league_code}.csv"
     resp = requests.get(url, timeout=20)
     resp.raise_for_status()
-    return resp.text
+    # OJO: football-data.co.uk sirve estos CSV con BOM UTF-8 (EF BB BF) y sin
+    # cabecera Content-Type con charset, así que "requests" adivina mal la
+    # codificación (normalmente Latin-1) y resp.text deja el BOM convertido
+    # en basura visible ("ï»¿Div,...") en vez de quitarlo. Eso hace que
+    # pandas no reconozca la columna "Div" y la liga se cargue como vacía.
+    # Decodificando los bytes crudos como utf-8-sig se quita el BOM bien.
+    return resp.content.decode("utf-8-sig")
 
 
 def update_league(league_code: str):
