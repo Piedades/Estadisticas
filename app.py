@@ -620,6 +620,41 @@ with tab_compare:
     st.dataframe(compare_df, use_container_width=True)
     st.caption("Córners / Tiros / Tiros a puerta / Tarjetas amarillas en formato \"a favor / en contra\", promedio por partido.")
 
+    st.markdown("---")
+    st.markdown("**Enfrentamientos directos**")
+    h2h = df[
+        ((df["HomeTeam"] == team_a) & (df["AwayTeam"] == team_b))
+        | ((df["HomeTeam"] == team_b) & (df["AwayTeam"] == team_a))
+    ].sort_values("Date", ascending=False)
+    if h2h.empty:
+        st.caption(f"No hay enfrentamientos directos entre {team_a} y {team_b} en los datos cargados.")
+    else:
+        wins_a = (
+            ((h2h["HomeTeam"] == team_a) & (h2h["FTHG"] > h2h["FTAG"]))
+            | ((h2h["AwayTeam"] == team_a) & (h2h["FTAG"] > h2h["FTHG"]))
+        ).sum()
+        wins_b = (
+            ((h2h["HomeTeam"] == team_b) & (h2h["FTHG"] > h2h["FTAG"]))
+            | ((h2h["AwayTeam"] == team_b) & (h2h["FTAG"] > h2h["FTHG"]))
+        ).sum()
+        draws = (h2h["FTHG"] == h2h["FTAG"]).sum()
+        hc1, hc2, hc3 = st.columns(3)
+        hc1.metric(f"Victorias {team_a}", int(wins_a))
+        hc2.metric("Empates", int(draws))
+        hc3.metric(f"Victorias {team_b}", int(wins_b))
+
+        h2h_display = h2h.head(10).copy()
+        h2h_display["Fecha"] = h2h_display["Date"].dt.strftime("%d/%m/%Y")
+        h2h_display["Partido"] = (
+            h2h_display["HomeTeam"] + " " + h2h_display["FTHG"].astype(str)
+            + "-" + h2h_display["FTAG"].astype(str) + " " + h2h_display["AwayTeam"]
+        )
+        st.dataframe(h2h_display[["Fecha", "Partido"]], use_container_width=True, hide_index=True)
+        st.caption(
+            f"Mostrando los últimos {len(h2h_display)} de {len(h2h)} enfrentamientos directos "
+            f"encontrados en los datos cargados."
+        )
+
     if st.button("Ver predicción de este partido", key="compare_predict_btn"):
         pred_cmp = goals_model.predict_match(team_a, team_b)
         st.markdown(f"**{team_a} {pred_cmp['lambda_home']:.2f} — {pred_cmp['lambda_away']:.2f} {team_b}**")
