@@ -25,6 +25,22 @@ COMPETITION_CODES = {
     "F1": "FL1",
 }
 
+# Competiciones europeas: no son "nuestras ligas" (los dos equipos pueden ser
+# de ligas domésticas distintas), así que van aparte con sus propios códigos
+# especiales ("UCL"/"UEL") en vez de un código de liga (SP1, E0...). El código
+# de football-data.org para la Champions League es "CL"; el de la Europa
+# League es "EL" — ambas en el Free Tier según su página de cobertura, pero
+# football-data.org podría cambiar esto, así que fetch_matches_for_date no
+# aborta el resto de competiciones si una de las dos falla.
+EUROPEAN_COMPETITION_CODES = {
+    "UCL": "CL",
+    "UEL": "EL",
+}
+EUROPEAN_DISPLAY_NAMES = {
+    "UCL": "🏆 Champions League",
+    "UEL": "🥈 Europa League",
+}
+
 # football-data.org usa nombres oficiales largos ("Real Madrid CF") que no
 # siempre coinciden con los nombres cortos de nuestros CSV ("Real Madrid").
 # Casos conocidos que no se resuelven solo con "contiene la palabra":
@@ -138,19 +154,23 @@ def resolve_team_name(raw_name: str, known_teams: list) -> str | None:
 
 
 def fetch_matches_for_date(date_str: str):
-    """Devuelve (partidos, error). partidos es una lista de dicts:
-    {league_code, home_raw, away_raw, time, status}. error es None si todo
-    fue bien, o un mensaje si algo falló."""
+    """Devuelve (partidos, avisos). partidos es una lista de dicts:
+    {league_code, home_raw, away_raw, time, status}. avisos es una lista de
+    mensajes (vacía si todo fue bien) — un fallo en UNA competición (p. ej.
+    si algún día football-data.org cambiara el código de la Europa League)
+    ya no cancela las demás, solo se avisa y se sigue con el resto."""
     headers = _headers()
     if headers is None:
-        return [], (
+        return [], [
             "No hay FOOTBALL_DATA_TOKEN configurado. Ve a Streamlit Cloud > "
             "tu app > Settings > Secrets y añade: "
             "FOOTBALL_DATA_TOKEN = \"tu-token\""
-        )
+        ]
 
+    all_competitions = {**COMPETITION_CODES, **EUROPEAN_COMPETITION_CODES}
     all_matches = []
-    for league_code, comp_code in COMPETITION_CODES.items():
+    warnings = []
+    for league_code, comp_code in all_competitions.items():
         url = f"{API_BASE}/competitions/{comp_code}/matches"
         try:
             resp = requests.get(
@@ -159,15 +179,19 @@ def fetch_matches_for_date(date_str: str):
                 timeout=15,
             )
         except Exception as e:
-            return all_matches, f"Error de red consultando {league_code}: {e}"
+            warnings.append(f"Error de red consultando {league_code}: {e}")
+            continue
 
         if resp.status_code == 429:
-            return all_matches, (
+            warnings.append(
                 "Límite de peticiones de football-data.org alcanzado "
-                "(10 por minuto). Espera un momento y vuelve a intentarlo."
+                "(10 por minuto); puede que falten partidos de alguna "
+                "competición. Espera un momento y vuelve a intentarlo."
             )
+            break  # el resto de peticiones también darían 429, no seguimos
         if resp.status_code != 200:
-            return all_matches, f"Error {resp.status_code} en {league_code}: {resp.text[:200]}"
+            warnings.append(f"No se pudo consultar {league_code} (error {resp.status_code}).")
+            continue
 
         data = resp.json()
         for m in data.get("matches", []):
@@ -191,4 +215,4 @@ def fetch_matches_for_date(date_str: str):
                 "status": m.get("status", ""),
             })
 
-    return all_matches, None
+    return all_matches, warnings

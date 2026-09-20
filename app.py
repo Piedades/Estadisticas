@@ -19,10 +19,14 @@ from auto_update import update_league, current_season_code
 from auth import authenticate, register_user, load_users, is_admin, delete_user, update_invite_code
 from season_sim import simulate_season
 from team_stats import team_match_averages, METRIC_COLUMNS
-from fixtures_api import fetch_matches_for_date, resolve_team_name
+from fixtures_api import (
+    fetch_matches_for_date, resolve_team_name,
+    EUROPEAN_COMPETITION_CODES, EUROPEAN_DISPLAY_NAMES,
+)
 from xpts import expected_points_table
 from favorites import get_user_favorites, save_user_favorites
 from champions import predict_cross_goals, predict_cross_generic
+from odds_api import fetch_odds_for_league, match_odds_to_teams, implied_probs_from_odds
 from visuals import render_prob_bar, render_mini_prob_bar, favorite_badge, render_form_badges
 
 st.set_page_config(page_title="Pirujeando", layout="wide")
@@ -305,8 +309,9 @@ with tab_more:
 with tab_today:
     st.subheader("Partidos del día")
     st.caption(
-        "Calendario en vivo de las 5 grandes ligas, vía football-data.org "
-        "(no besoccer.es). Necesita el secret FOOTBALL_DATA_TOKEN configurado."
+        "Calendario en vivo de las 5 grandes ligas + Champions y Europa League, "
+        "vía football-data.org (no besoccer.es). Necesita el secret "
+        "FOOTBALL_DATA_TOKEN configurado."
     )
 
     def _select_match(lg, home, away):
@@ -315,61 +320,171 @@ with tab_today:
         st.session_state["away_team"] = away
         st.session_state["show_prediction"] = True
 
+    def _select_european_match(home_league, home, away_league, away):
+        st.session_state["champions_home_league"] = LEAGUES[home_league]
+        st.session_state["champions_away_league"] = LEAGUES[away_league]
+        st.session_state["champions_home_team"] = home
+        st.session_state["champions_away_team"] = away
+        st.session_state["champions_show"] = True
+
+    def _resolve_cross_league(raw_name):
+        """Busca en cuál de nuestras 7 ligas domésticas juega este equipo
+        (para Champions/Europa League, donde local y visitante pueden ser de
+        ligas distintas, o de una liga que ni seguimos). Devuelve
+        (league_code, nombre_resuelto) o (None, None)."""
+        for code in LEAGUES:
+            teams_code = sorted(get_goals_model(code, decay).teams)
+            resolved = resolve_team_name(raw_name, teams_code)
+            if resolved is not None:
+                return code, resolved
+        return None, None
+
     if st.session_state.get("show_prediction") and st.session_state.get("home_team"):
         st.success(
             f"✅ Predicción lista para **{st.session_state['home_team']} vs "
             f"{st.session_state['away_team']}** — ve a la pestaña "
             f"**\"🔮 Predecir partido\"** para verla completa (ya está todo calculado)."
         )
+    if st.session_state.get("champions_show") and st.session_state.get("champions_home_team"):
+        st.success(
+            f"✅ Predicción lista para **{st.session_state['champions_home_team']} vs "
+            f"{st.session_state['champions_away_team']}** — ve a la pestaña "
+            f"**\"🏆 Champions\"** para verla completa (ya está todo calculado)."
+        )
 
     import datetime as _dt
     picked_date = st.date_input("Fecha", value=_dt.date.today(), key="today_date")
 
-    if st.button("Buscar partidos", type="primary", key="today_search_btn"):
+    btn_col1, btn_col2 = st.columns(2)
+    if btn_col1.button("Buscar partidos", type="primary", key="today_search_btn"):
         with st.spinner("Consultando football-data.org..."):
-            matches, err = fetch_matches_for_date(picked_date.strftime("%Y-%m-%d"))
+            matches, warnings = fetch_matches_for_date(picked_date.strftime("%Y-%m-%d"))
         st.session_state["today_matches"] = matches
-        st.session_state["today_error"] = err
+        st.session_state["today_warnings"] = warnings
+        st.session_state["today_odds"] = None  # cuotas de una búsqueda anterior ya no valen
 
-    if st.session_state.get("today_error"):
-        st.error(st.session_state["today_error"])
+    if btn_col2.button("💰 Comparar con cuotas reales", key="today_odds_btn"):
+        odds_by_league = {}
+        with st.spinner("Consultando The Odds API..."):
+            for lg_odds in ["E0", "SP1", "D1", "I1", "F1"]:
+                odds_by_league[lg_odds] = fetch_odds_for_league(lg_odds)
+        st.session_state["today_odds"] = odds_by_league
+
+    odds_errors = set()
+    for _lg_o, (_matches_o, _err_o) in (st.session_state.get("today_odds") or {}).items():
+        if _err_o:
+            odds_errors.add(_err_o)
+    for _err_o in odds_errors:
+        st.warning(f"Cuotas: {_err_o}")
+
+    today_warnings = st.session_state.get("today_warnings") or []
+    for w in today_warnings:
+        st.warning(w)
 
     matches_today = st.session_state.get("today_matches")
     if matches_today is not None:
         if not matches_today:
-            st.info("No hay partidos programados de las 5 grandes ligas para esa fecha.")
+            if not today_warnings:
+                st.info("No hay partidos programados para esa fecha.")
         else:
             st.success(f"{len(matches_today)} partidos encontrados.")
             for m in matches_today:
                 lg = m["league_code"]
-                league_teams = sorted(get_goals_model(lg, decay).teams)
-                home = resolve_team_name(m["home_raw"], league_teams)
-                away = resolve_team_name(m["away_raw"], league_teams)
+                is_european = lg in EUROPEAN_COMPETITION_CODES
+
+                if is_european:
+                    home_league, home = _resolve_cross_league(m["home_raw"])
+                    away_league, away = _resolve_cross_league(m["away_raw"])
+                else:
+                    league_teams = sorted(get_goals_model(lg, decay).teams)
+                    home = resolve_team_name(m["home_raw"], league_teams)
+                    away = resolve_team_name(m["away_raw"], league_teams)
 
                 with st.container(border=True):
                     top1, top2 = st.columns([4, 1])
-                    top1.markdown(f"**{LEAGUES[lg]}**")
+                    top1.markdown(f"**{EUROPEAN_DISPLAY_NAMES[lg] if is_european else LEAGUES[lg]}**")
                     top2.markdown(f"🕒 {m['time']}")
 
                     if home is None or away is None:
                         st.markdown(f"**{m['home_raw']}** vs **{m['away_raw']}**")
-                        st.caption(
-                            "No he podido emparejar uno de estos equipos con nuestros datos "
-                            "históricos (nombre distinto). No se puede calcular predicción."
-                        )
+                        if is_european:
+                            st.caption(
+                                "Al menos uno de estos dos equipos juega en una liga que no "
+                                "tengo cargada (solo sigo Big 5 + Países Bajos + Portugal). "
+                                "No se puede calcular predicción."
+                            )
+                        else:
+                            st.caption(
+                                "No he podido emparejar uno de estos equipos con nuestros datos "
+                                "históricos (nombre distinto). No se puede calcular predicción."
+                            )
                         continue
 
-                    model_today = get_goals_model(lg, decay)
-                    pred_today = model_today.predict_match(home, away)
+                    if is_european and home_league != away_league:
+                        model_home = get_goals_model(home_league, decay)
+                        model_away = get_goals_model(away_league, decay)
+                        pred_today = predict_cross_goals(model_home, home, model_away, away)
+                    else:
+                        lg_single = home_league if is_european else lg
+                        model_today = get_goals_model(lg_single, decay)
+                        pred_today = model_today.predict_match(home, away)
+
                     st.markdown(f"### {home}  vs  {away}")
                     render_mini_prob_bar(pred_today["P(H)"], pred_today["P(D)"], pred_today["P(A)"])
                     st.caption(favorite_badge(pred_today["P(H)"], pred_today["P(D)"], pred_today["P(A)"], home, away))
 
-                    st.button(
-                        "Ver predicción completa →",
-                        key=f"today_predict_{lg}_{home}_{away}",
-                        on_click=_select_match, args=(lg, home, away),
-                    )
+                    # Comparación con cuotas reales, solo si ya se pulsó
+                    # "💰 Comparar con cuotas reales" y esta liga es una de
+                    # las 5 grandes (no gastamos cuota de la API en
+                    # Champions/Europa/Países Bajos/Portugal).
+                    odds_today = st.session_state.get("today_odds") or {}
+                    if not is_european and lg in odds_today:
+                        odds_matches_lg, _ = odds_today[lg]
+                        om = match_odds_to_teams(odds_matches_lg, home, away, league_teams)
+                        if om is not None:
+                            imp_h, imp_d, imp_a = implied_probs_from_odds(
+                                om["odds_home"], om["odds_draw"], om["odds_away"]
+                            )
+                            oc1, oc2, oc3 = st.columns(3)
+                            oc1.metric(
+                                "Cuota Local", f"{om['odds_home']:.2f}",
+                                f"modelo {pred_today['P(H)']:.0%} vs mercado {imp_h:.0%}",
+                            )
+                            if om["odds_draw"]:
+                                oc2.metric(
+                                    "Cuota Empate", f"{om['odds_draw']:.2f}",
+                                    f"modelo {pred_today['P(D)']:.0%} vs mercado {imp_d:.0%}",
+                                )
+                            oc3.metric(
+                                "Cuota Visitante", f"{om['odds_away']:.2f}",
+                                f"modelo {pred_today['P(A)']:.0%} vs mercado {imp_a:.0%}",
+                            )
+                            edges = [("Local", pred_today["P(H)"] - imp_h)]
+                            if om["odds_draw"]:
+                                edges.append(("Empate", pred_today["P(D)"] - imp_d))
+                            edges.append(("Visitante", pred_today["P(A)"] - imp_a))
+                            best_label, best_edge = max(edges, key=lambda e: e[1])
+                            if best_edge > 0.05:
+                                st.caption(
+                                    f"💎 Posible value bet: el modelo ve **{best_edge:+.1%}** más "
+                                    f"probable **{best_label}** de lo que implica la cuota "
+                                    f"(media de {om['n_bookmakers']} casas). No es garantía de "
+                                    f"acierto, solo una discrepancia frente al mercado."
+                                )
+
+                    if is_european:
+                        st.button(
+                            "Ver predicción completa (pestaña Champions) →",
+                            key=f"today_predict_{lg}_{home}_{away}",
+                            on_click=_select_european_match,
+                            args=(home_league, home, away_league, away),
+                        )
+                    else:
+                        st.button(
+                            "Ver predicción completa →",
+                            key=f"today_predict_{lg}_{home}_{away}",
+                            on_click=_select_match, args=(lg, home, away),
+                        )
 
 # ---------------------------------------------------------------
 # TAB 1: Predicción de partido (+ comparador de cuotas + exportar)
@@ -991,17 +1106,40 @@ with tab_diary:
 
     current_user = st.session_state["current_user"]
 
+    # Mercados sobre los que ya damos predicción en la app (ver METRICS más
+    # arriba) más el 1X2 clásico. Antes el diario solo dejaba anotar
+    # Local/Empate/Visitante; ahora se puede apuntar cualquier apuesta que
+    # hagas sobre córners, tiros, tiros a puerta, tarjetas o goles totales.
+    MERCADOS_DIARIO = ["Ganador (1X2)", "Córners", "Tiros", "Tiros a puerta", "Tarjetas amarillas", "Goles totales"]
+    DIARIO_COLUMNS = [
+        "usuario", "fecha", "liga", "local", "visitante",
+        "mercado", "linea", "seleccion", "cuota", "stake", "resultado",
+    ]
+
     log_content, _ = get_file("bets_log.csv")
     if log_content:
         all_bets_df = pd.read_csv(io.StringIO(log_content))
         if "usuario" not in all_bets_df.columns:
             all_bets_df["usuario"] = "desconocido"
+        # Compatibilidad con apuestas guardadas antes de añadir mercado/línea:
+        # todas esas eran del mercado 1X2 (la única opción que había entonces).
+        if "mercado" not in all_bets_df.columns:
+            all_bets_df["mercado"] = "Ganador (1X2)"
+        if "linea" not in all_bets_df.columns:
+            all_bets_df["linea"] = np.nan
+        for col in DIARIO_COLUMNS:
+            if col not in all_bets_df.columns:
+                all_bets_df[col] = ""
     else:
-        all_bets_df = pd.DataFrame(columns=[
-            "usuario", "fecha", "liga", "local", "visitante", "seleccion", "cuota", "stake", "resultado"
-        ])
+        all_bets_df = pd.DataFrame(columns=DIARIO_COLUMNS)
 
     log_df = all_bets_df[all_bets_df["usuario"] == current_user].copy()
+
+    # El mercado va FUERA del formulario a propósito: dentro de un st.form los
+    # widgets no provocan un rerun hasta enviar, así que no podríamos cambiar
+    # "Selección"/"Línea" según el mercado elegido si estuviera dentro.
+    f_mercado = st.selectbox("Mercado", MERCADOS_DIARIO, key="diary_mercado")
+    es_1x2 = f_mercado == "Ganador (1X2)"
 
     with st.form("nueva_apuesta"):
         c1, c2, c3 = st.columns(3)
@@ -1009,14 +1147,21 @@ with tab_diary:
         f_liga = c2.selectbox("Liga", list(LEAGUES.values()), key="diary_liga")
         f_stake = c3.number_input("Stake (unidades)", min_value=0.0, value=1.0, step=0.5)
 
-        c4, c5, c6 = st.columns(3)
+        c4, c5 = st.columns(2)
         f_local = c4.text_input("Equipo local")
         f_visitante = c5.text_input("Equipo visitante")
-        f_seleccion = c6.selectbox("Selección", ["Local", "Empate", "Visitante"])
 
-        c7, c8 = st.columns(2)
-        f_cuota = c7.number_input("Cuota", min_value=1.01, value=2.00, step=0.01)
-        f_resultado = c8.selectbox("Resultado", ["Pendiente", "Ganada", "Perdida"])
+        if es_1x2:
+            f_linea = None
+            f_seleccion = st.selectbox("Selección", ["Local", "Empate", "Visitante"])
+        else:
+            c6, c7 = st.columns(2)
+            f_linea = c6.number_input(f"Línea de {f_mercado.lower()}", min_value=0.0, value=9.5, step=0.5)
+            f_seleccion = c7.selectbox("Selección", ["Over (más de)", "Under (menos de)"])
+
+        c8, c9 = st.columns(2)
+        f_cuota = c8.number_input("Cuota", min_value=1.01, value=2.00, step=0.01)
+        f_resultado = c9.selectbox("Resultado", ["Pendiente", "Ganada", "Perdida"])
 
         submitted = st.form_submit_button("Guardar apuesta")
 
@@ -1024,7 +1169,8 @@ with tab_diary:
         new_row = pd.DataFrame([{
             "usuario": current_user,
             "fecha": f_date, "liga": f_liga, "local": f_local, "visitante": f_visitante,
-            "seleccion": f_seleccion, "cuota": f_cuota, "stake": f_stake, "resultado": f_resultado,
+            "mercado": f_mercado, "linea": f_linea, "seleccion": f_seleccion,
+            "cuota": f_cuota, "stake": f_stake, "resultado": f_resultado,
         }])
         all_bets_df = pd.concat([all_bets_df, new_row], ignore_index=True)
         ok, msg = put_file("bets_log.csv", all_bets_df.to_csv(index=False), f"Añadir apuesta de {current_user}")
@@ -1045,7 +1191,7 @@ with tab_diary:
             return "background-color: #78716c; color: white;"
 
         log_display = log_df.drop(columns=["usuario"])
-        styled_log = log_display.style.format({"cuota": "{:.2f}", "stake": "{:.2f}"}).map(_color_resultado, subset=["resultado"])
+        styled_log = log_display.style.format({"cuota": "{:.2f}", "stake": "{:.2f}", "linea": "{:.1f}"}).map(_color_resultado, subset=["resultado"])
         st.dataframe(styled_log, use_container_width=True, hide_index=True)
 
         resolved = log_df[log_df["resultado"].isin(["Ganada", "Perdida"])].copy()
