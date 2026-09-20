@@ -110,6 +110,8 @@ LEAGUES = {
     "I1": "Italia — Serie A",
     "F1": "Francia — Ligue 1",
     "D1": "Alemania — Bundesliga",
+    "N1": "Países Bajos — Eredivisie",
+    "P1": "Portugal — Liga Portugal",
 }
 
 DATA_DIR = "./data"

@@ -28,6 +28,8 @@ CURRENT_SEASON_FILE = {
     "I1": "I1.csv",
     "F1": "F1.csv",
     "D1": "D1.csv",
+    "N1": "N1.csv",
+    "P1": "P1.csv",
 }
 
 
