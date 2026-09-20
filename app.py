@@ -106,6 +106,26 @@ def get_goals_model(league_code: str, decay: float) -> DixonColesModel:
     return model
 
 
+def current_season_teams(league_code: str) -> list:
+    """Equipos que han jugado en la liga en la temporada en curso.
+
+    El modelo (goals_model.teams) usa TODO el histórico cargado (varias
+    temporadas hacia atrás) para entrenar los parámetros de ataque/defensa,
+    así que incluye equipos ya descendidos (p. ej. Girona en LaLiga tras
+    2025-26). Para los desplegables de "qué equipo elijo" no queremos eso:
+    solo debe verse el equipo que compite en la liga ahora mismo.
+    """
+    df_league = get_league_df(league_code)
+    if df_league.empty or "Season" not in df_league.columns:
+        return []
+    seasons = df_league["Season"].dropna().unique()
+    if len(seasons) == 0:
+        return []
+    current_season = sorted(seasons)[-1]
+    season_df = df_league[df_league["Season"] == current_season]
+    return sorted(set(season_df["HomeTeam"]) | set(season_df["AwayTeam"]))
+
+
 @st.cache_resource(show_spinner="Entrenando modelos de córners/tiros/tarjetas...")
 def get_metric_models(league_code: str):
     df = get_league_df(league_code)
@@ -336,7 +356,7 @@ with tab_today:
 # TAB 1: Predicción de partido (+ comparador de cuotas + exportar)
 # ---------------------------------------------------------------
 with tab_pred:
-    teams = sorted(goals_model.teams)
+    teams = current_season_teams(league_code) or sorted(goals_model.teams)
     col1, col2 = st.columns(2)
     with col1:
         home = st.selectbox("Equipo local", teams, index=0, key="home_team")
@@ -471,7 +491,8 @@ Modelo estadístico, no es una recomendación de apuesta.
 # TAB 2: Ficha de equipo
 # ---------------------------------------------------------------
 with tab_team:
-    team_choice = st.selectbox("Equipo", sorted(goals_model.teams), key="team_profile")
+    team_options_profile = current_season_teams(league_code) or sorted(goals_model.teams)
+    team_choice = st.selectbox("Equipo", team_options_profile, key="team_profile")
 
     current_user = st.session_state["current_user"]
     fav_teams = get_user_favorites(current_user, league_code)
@@ -540,7 +561,7 @@ with tab_team:
 # ---------------------------------------------------------------
 with tab_compare:
     cc1, cc2 = st.columns(2)
-    team_options = sorted(goals_model.teams)
+    team_options = current_season_teams(league_code) or sorted(goals_model.teams)
     with cc1:
         team_a = st.selectbox("Equipo A", team_options, index=0, key="compare_a")
     with cc2:
@@ -646,8 +667,11 @@ with tab_champions:
         champ_home_league_code = [k for k, v in LEAGUES.items() if v == champ_home_league_label][0]
         champ_home_model = get_goals_model(champ_home_league_code, decay)
         champ_home_metrics = get_metric_models(champ_home_league_code)
+        champ_home_team_options = (
+            current_season_teams(champ_home_league_code) or sorted(champ_home_model.teams)
+        )
         champ_home_team = st.selectbox(
-            "Equipo", sorted(champ_home_model.teams), key="champions_home_team"
+            "Equipo", champ_home_team_options, key="champions_home_team"
         )
     with ch2:
         st.markdown("**Equipo visitante**")
@@ -658,8 +682,11 @@ with tab_champions:
         champ_away_league_code = [k for k, v in LEAGUES.items() if v == champ_away_league_label][0]
         champ_away_model = get_goals_model(champ_away_league_code, decay)
         champ_away_metrics = get_metric_models(champ_away_league_code)
+        champ_away_team_options = (
+            current_season_teams(champ_away_league_code) or sorted(champ_away_model.teams)
+        )
         champ_away_team = st.selectbox(
-            "Equipo", sorted(champ_away_model.teams), key="champions_away_team"
+            "Equipo", champ_away_team_options, key="champions_away_team"
         )
 
     if st.button("Calcular predicción", type="primary", key="champions_predict_btn"):
