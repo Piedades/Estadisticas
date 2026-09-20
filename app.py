@@ -93,12 +93,12 @@ METRICS = {
 }
 
 
-@st.cache_data(show_spinner="Cargando datos de la liga...")
+@st.cache_data(show_spinner="Cargando datos de la liga...", ttl="1h")
 def get_league_df(league_code: str) -> pd.DataFrame:
     return load_league_data(DATA_DIR, league_code)
 
 
-@st.cache_resource(show_spinner="Entrenando modelo de goles...")
+@st.cache_resource(show_spinner="Entrenando modelo de goles...", ttl="6h")
 def get_goals_model(league_code: str, decay: float) -> DixonColesModel:
     df = get_league_df(league_code)
     model = DixonColesModel(decay=decay)
@@ -126,7 +126,7 @@ def current_season_teams(league_code: str) -> list:
     return sorted(set(season_df["HomeTeam"]) | set(season_df["AwayTeam"]))
 
 
-@st.cache_resource(show_spinner="Entrenando modelos de córners/tiros/tarjetas...")
+@st.cache_resource(show_spinner="Entrenando modelos de córners/tiros/tarjetas...", ttl="6h")
 def get_metric_models(league_code: str):
     df = get_league_df(league_code)
     models = {}
@@ -139,7 +139,7 @@ def get_metric_models(league_code: str):
     return models
 
 
-@st.cache_resource(show_spinner="Calculando ratings Elo...")
+@st.cache_resource(show_spinner="Calculando ratings Elo...", ttl="6h")
 def get_elo(league_code: str) -> EloTracker:
     df = get_league_df(league_code)
     elo = EloTracker(k=20, home_adv=60)
@@ -170,6 +170,25 @@ def get_xpts(league_code: str, decay: float, season: str) -> pd.DataFrame:
     df = get_league_df(league_code)
     model = get_goals_model(league_code, decay)
     return expected_points_table(df, season, model)
+
+
+def _clear_all_data_caches():
+    """Vacía TODAS las cachés (datos y modelos entrenados), no solo la de
+    get_league_df. Si solo se limpia get_league_df, los modelos ya
+    entrenados (get_goals_model, get_metric_models, get_elo son
+    @st.cache_resource y viven mientras viva el proceso) siguen usando el
+    histórico antiguo, así que un equipo recién ascendido (con partidos ya
+    en el CSV) no aparece en goals_model.teams hasta reiniciar la app a
+    mano — por eso podía fallar el emparejamiento de nombres en "Partidos
+    del día" aunque los datos ya estuvieran actualizados."""
+    get_league_df.clear()
+    get_goals_model.clear()
+    get_metric_models.clear()
+    get_elo.clear()
+    get_backtest.clear()
+    get_calibration.clear()
+    get_season_sim.clear()
+    get_xpts.clear()
 
 
 # ---------------------------------------------------------------
@@ -213,7 +232,7 @@ if st.sidebar.button("🔄 Actualizar todas las ligas"):
             st.sidebar.success(f"{name}: {msg_i}")
         else:
             st.sidebar.error(f"{name}: {msg_i}")
-    get_league_df.clear()
+    _clear_all_data_caches()
     st.sidebar.info("Tardará 1-2 minutos en desplegarse; luego recarga la página.")
 
 with st.sidebar.expander("Subir CSV manualmente (alternativa)"):
@@ -231,7 +250,7 @@ with st.sidebar.expander("Subir CSV manualmente (alternativa)"):
             )
             if ok:
                 st.success(msg + " Tardará 1-2 minutos en desplegarse; luego recarga la página.")
-                get_league_df.clear()
+                _clear_all_data_caches()
             else:
                 st.error(msg)
 
@@ -335,11 +354,6 @@ with tab_today:
                     if home is None or away is None:
                         st.markdown(f"**{m['home_raw']}** vs **{m['away_raw']}**")
                         st.caption(
-                            f"[DEBUG2 lg={lg!r} n_teams={len(league_teams)} "
-                            f"'Malaga' in list={'Malaga' in league_teams} "
-                            f"teams={league_teams!r}] "
-                            f"[DEBUG home_raw={m['home_raw']!r} -> {home!r} | "
-                            f"away_raw={m['away_raw']!r} -> {away!r}] "
                             "No he podido emparejar uno de estos equipos con nuestros datos "
                             "históricos (nombre distinto). No se puede calcular predicción."
                         )
