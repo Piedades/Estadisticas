@@ -5,8 +5,14 @@ besoccer.es, que bloquea peticiones desde servidores en la nube).
 Necesita un token gratuito guardado en Secrets como FOOTBALL_DATA_TOKEN.
 Consíguelo gratis en https://www.football-data.org/client/register
 """
+import unicodedata
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import requests
 import streamlit as st
+
+LOCAL_TZ = ZoneInfo("Europe/Madrid")
 
 API_BASE = "https://api.football-data.org/v4"
 
@@ -88,19 +94,45 @@ def _headers():
     return {"X-Auth-Token": token}
 
 
+def _normalize(s: str) -> str:
+    """Minúsculas y sin tildes/diacríticos, para comparar nombres de equipo
+    sin que un acento (o que la API y nuestro texto usen formas Unicode
+    distintas para la misma tilde) haga fallar el emparejamiento — por
+    ejemplo "Málaga" vs "Malaga" o "Coruña" vs "Coruna"."""
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return s.lower().strip()
+
+
+_ALIASES_NORM = {_normalize(k): v for k, v in TEAM_ALIASES.items()}
+
+
 def resolve_team_name(raw_name: str, known_teams: list) -> str | None:
     """Intenta encontrar el nombre que usamos en los CSV para un equipo de
     football-data.org."""
     if raw_name in known_teams:
         return raw_name
-    if raw_name in TEAM_ALIASES:
-        alias = TEAM_ALIASES[raw_name]
+
+    raw_norm = _normalize(raw_name)
+
+    # Alias exacto (comparando ya sin tildes, para no depender de que el
+    # nombre oficial de la API tenga exactamente los mismos caracteres que
+    # escribimos a mano en TEAM_ALIASES).
+    alias = _ALIASES_NORM.get(raw_norm)
+    if alias is not None:
         return alias if alias in known_teams else None
 
-    raw_lower = raw_name.lower()
+    # Alias por subcadena: por si el nombre oficial trae alguna palabra de
+    # más ("Club Atlético de Madrid" en vez de "Atlético de Madrid").
+    for alias_key_norm, alias_value in _ALIASES_NORM.items():
+        if alias_key_norm in raw_norm or raw_norm in alias_key_norm:
+            return alias_value if alias_value in known_teams else None
+
+    # Último recurso: coincidencia directa por subcadena con el nombre corto
+    # que usa football-data.co.uk en nuestros CSV.
     for team in known_teams:
-        team_lower = team.lower()
-        if team_lower in raw_lower or raw_lower in team_lower:
+        team_norm = _normalize(team)
+        if team_norm in raw_norm or raw_norm in team_norm:
             return team
     return None
 
@@ -140,7 +172,17 @@ def fetch_matches_for_date(date_str: str):
         data = resp.json()
         for m in data.get("matches", []):
             utc_date = m.get("utcDate", "")
-            time_str = utc_date[11:16] if len(utc_date) >= 16 else "?"
+            time_str = "?"
+            if utc_date:
+                try:
+                    # football-data.org da la hora en UTC ("...Z"); hay que
+                    # convertirla a hora de España (CET/CEST según la época
+                    # del año) para que coincida con la hora real del partido.
+                    dt_utc = datetime.strptime(utc_date, "%Y-%m-%dT%H:%M:%SZ")
+                    dt_utc = dt_utc.replace(tzinfo=ZoneInfo("UTC"))
+                    time_str = dt_utc.astimezone(LOCAL_TZ).strftime("%H:%M")
+                except ValueError:
+                    time_str = utc_date[11:16] if len(utc_date) >= 16 else "?"
             all_matches.append({
                 "league_code": league_code,
                 "home_raw": m["homeTeam"]["name"],
