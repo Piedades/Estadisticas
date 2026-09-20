@@ -4,6 +4,7 @@ Ejecutar con: streamlit run app.py
 """
 import io
 import math
+import uuid
 
 import numpy as np
 import pandas as pd
@@ -1113,7 +1114,7 @@ with tab_diary:
     MERCADOS_DIARIO = ["Ganador (1X2)", "Córners", "Tiros", "Tiros a puerta", "Tarjetas amarillas", "Goles totales"]
     DIARIO_COLUMNS = [
         "usuario", "fecha", "liga", "local", "visitante",
-        "mercado", "linea", "seleccion", "cuota", "stake", "resultado",
+        "mercado", "linea", "seleccion", "cuota", "stake", "resultado", "combo_id",
     ]
 
     log_content, _ = get_file("bets_log.csv")
@@ -1127,57 +1128,157 @@ with tab_diary:
             all_bets_df["mercado"] = "Ganador (1X2)"
         if "linea" not in all_bets_df.columns:
             all_bets_df["linea"] = np.nan
+        # Compatibilidad con apuestas guardadas antes de las combinadas: todas
+        # esas eran sencillas (una pata por fila), así que combo_id vacío.
+        if "combo_id" not in all_bets_df.columns:
+            all_bets_df["combo_id"] = ""
         for col in DIARIO_COLUMNS:
             if col not in all_bets_df.columns:
                 all_bets_df[col] = ""
+        all_bets_df["combo_id"] = all_bets_df["combo_id"].fillna("").astype(str)
     else:
         all_bets_df = pd.DataFrame(columns=DIARIO_COLUMNS)
 
     log_df = all_bets_df[all_bets_df["usuario"] == current_user].copy()
 
-    # El mercado va FUERA del formulario a propósito: dentro de un st.form los
-    # widgets no provocan un rerun hasta enviar, así que no podríamos cambiar
-    # "Selección"/"Línea" según el mercado elegido si estuviera dentro.
-    f_mercado = st.selectbox("Mercado", MERCADOS_DIARIO, key="diary_mercado")
-    es_1x2 = f_mercado == "Ganador (1X2)"
+    tipo_apuesta = st.radio(
+        "Tipo de apuesta", ["Sencilla", "Combinada"], horizontal=True, key="diary_tipo_apuesta",
+        help="Combinada: une selecciones de partidos y/o mercados distintos (como en cualquier "
+             "casa de apuestas), metiendo al final una única cuota total y un único dinero apostado.",
+    )
 
-    with st.form("nueva_apuesta"):
-        c1, c2, c3 = st.columns(3)
-        f_date = c1.date_input("Fecha")
-        f_liga = c2.selectbox("Liga", list(LEAGUES.values()), key="diary_liga")
-        f_stake = c3.number_input("Stake (unidades)", min_value=0.0, value=1.0, step=0.5)
+    # -------------------------------------------------------------
+    # Apuesta sencilla: una sola pata, tal cual funcionaba antes.
+    # -------------------------------------------------------------
+    if tipo_apuesta == "Sencilla":
+        # El mercado va FUERA del formulario a propósito: dentro de un st.form
+        # los widgets no provocan un rerun hasta enviar, así que no podríamos
+        # cambiar "Selección"/"Línea" según el mercado elegido si estuviera dentro.
+        f_mercado = st.selectbox("Mercado", MERCADOS_DIARIO, key="diary_mercado")
+        es_1x2 = f_mercado == "Ganador (1X2)"
 
-        c4, c5 = st.columns(2)
-        f_local = c4.text_input("Equipo local")
-        f_visitante = c5.text_input("Equipo visitante")
+        with st.form("nueva_apuesta"):
+            c1, c2, c3 = st.columns(3)
+            f_date = c1.date_input("Fecha")
+            f_liga = c2.selectbox("Liga", list(LEAGUES.values()), key="diary_liga")
+            f_stake = c3.number_input("Stake (unidades)", min_value=0.0, value=1.0, step=0.5)
 
-        if es_1x2:
-            f_linea = None
-            f_seleccion = st.selectbox("Selección", ["Local", "Empate", "Visitante"])
+            c4, c5 = st.columns(2)
+            f_local = c4.text_input("Equipo local")
+            f_visitante = c5.text_input("Equipo visitante")
+
+            if es_1x2:
+                f_linea = None
+                f_seleccion = st.selectbox("Selección", ["Local", "Empate", "Visitante"])
+            else:
+                c6, c7 = st.columns(2)
+                f_linea = c6.number_input(f"Línea de {f_mercado.lower()}", min_value=0.0, value=9.5, step=0.5)
+                f_seleccion = c7.selectbox("Selección", ["Over (más de)", "Under (menos de)"])
+
+            c8, c9 = st.columns(2)
+            f_cuota = c8.number_input("Cuota", min_value=1.01, value=2.00, step=0.01)
+            f_resultado = c9.selectbox("Resultado", ["Pendiente", "Ganada", "Perdida"])
+
+            submitted = st.form_submit_button("Guardar apuesta")
+
+        if submitted:
+            new_row = pd.DataFrame([{
+                "usuario": current_user,
+                "fecha": f_date, "liga": f_liga, "local": f_local, "visitante": f_visitante,
+                "mercado": f_mercado, "linea": f_linea, "seleccion": f_seleccion,
+                "cuota": f_cuota, "stake": f_stake, "resultado": f_resultado, "combo_id": "",
+            }])
+            all_bets_df = pd.concat([all_bets_df, new_row], ignore_index=True)
+            ok, msg = put_file("bets_log.csv", all_bets_df.to_csv(index=False), f"Añadir apuesta de {current_user}")
+            if ok:
+                st.success("Apuesta guardada.")
+            else:
+                st.error(msg)
+
+    # -------------------------------------------------------------
+    # Apuesta combinada: se van añadiendo "patas" (partido + mercado +
+    # selección) a una lista en memoria, y solo al final se mete la cuota
+    # total combinada y el dinero apostado de una vez — exactamente como en
+    # el boleto de una casa de apuestas.
+    # -------------------------------------------------------------
+    else:
+        st.caption(
+            "Añade cada selección de la combinada una a una. Cuando la tengas completa, "
+            "mete la cuota total y el stake al final y guarda el boleto entero."
+        )
+        if "combo_legs" not in st.session_state:
+            st.session_state["combo_legs"] = []
+
+        leg_mercado = st.selectbox("Mercado de esta selección", MERCADOS_DIARIO, key="combo_leg_mercado")
+        es_1x2_leg = leg_mercado == "Ganador (1X2)"
+
+        with st.form("combo_add_leg", clear_on_submit=True):
+            leg_liga = st.selectbox("Liga", list(LEAGUES.values()), key="combo_leg_liga")
+
+            lc3, lc4 = st.columns(2)
+            leg_local = lc3.text_input("Equipo local", key="combo_leg_local")
+            leg_visitante = lc4.text_input("Equipo visitante", key="combo_leg_visitante")
+
+            if es_1x2_leg:
+                leg_linea = None
+                leg_seleccion = st.selectbox("Selección", ["Local", "Empate", "Visitante"], key="combo_leg_seleccion_1x2")
+            else:
+                lc5, lc6 = st.columns(2)
+                leg_linea = lc5.number_input(
+                    f"Línea de {leg_mercado.lower()}", min_value=0.0, value=9.5, step=0.5, key="combo_leg_linea",
+                )
+                leg_seleccion = lc6.selectbox("Selección", ["Over (más de)", "Under (menos de)"], key="combo_leg_seleccion_ou")
+
+            add_leg = st.form_submit_button("➕ Añadir selección a la combinada")
+
+        if add_leg:
+            if not leg_local or not leg_visitante:
+                st.warning("Pon el equipo local y el visitante antes de añadir la selección.")
+            else:
+                st.session_state["combo_legs"].append({
+                    "liga": leg_liga, "local": leg_local, "visitante": leg_visitante,
+                    "mercado": leg_mercado, "linea": leg_linea, "seleccion": leg_seleccion,
+                })
+
+        legs = st.session_state["combo_legs"]
+        if legs:
+            st.markdown(f"**Selecciones en esta combinada ({len(legs)}):**")
+            for i, leg in enumerate(legs):
+                linea_txt = f" {leg['linea']:.1f}" if leg["linea"] is not None else ""
+                col_leg, col_del = st.columns([6, 1])
+                col_leg.write(f"{i + 1}. **{leg['liga']}**: {leg['local']} vs {leg['visitante']} — {leg['mercado']}{linea_txt} → {leg['seleccion']}")
+                if col_del.button("🗑️", key=f"combo_remove_{i}"):
+                    st.session_state["combo_legs"].pop(i)
+                    st.rerun()
+
+            st.markdown("---")
+            with st.form("combo_finalize"):
+                fc1, fc2, fc3 = st.columns(3)
+                combo_date = fc1.date_input("Fecha", key="combo_date")
+                combo_cuota = fc2.number_input("Cuota total combinada", min_value=1.01, value=2.00, step=0.01, key="combo_cuota")
+                combo_stake = fc3.number_input("Stake (unidades)", min_value=0.0, value=1.0, step=0.5, key="combo_stake")
+                combo_resultado = st.selectbox("Resultado", ["Pendiente", "Ganada", "Perdida"], key="combo_resultado")
+                finalize = st.form_submit_button("💾 Guardar combinada")
+
+            if finalize:
+                combo_id = str(uuid.uuid4())
+                new_rows = pd.DataFrame([{
+                    "usuario": current_user, "fecha": combo_date, "liga": leg["liga"],
+                    "local": leg["local"], "visitante": leg["visitante"], "mercado": leg["mercado"],
+                    "linea": leg["linea"], "seleccion": leg["seleccion"],
+                    "cuota": combo_cuota, "stake": combo_stake, "resultado": combo_resultado,
+                    "combo_id": combo_id,
+                } for leg in legs])
+                all_bets_df = pd.concat([all_bets_df, new_rows], ignore_index=True)
+                ok, msg = put_file("bets_log.csv", all_bets_df.to_csv(index=False), f"Añadir combinada de {current_user}")
+                if ok:
+                    st.success(f"Combinada de {len(new_rows)} selecciones guardada.")
+                    st.session_state["combo_legs"] = []
+                    st.rerun()
+                else:
+                    st.error(msg)
         else:
-            c6, c7 = st.columns(2)
-            f_linea = c6.number_input(f"Línea de {f_mercado.lower()}", min_value=0.0, value=9.5, step=0.5)
-            f_seleccion = c7.selectbox("Selección", ["Over (más de)", "Under (menos de)"])
-
-        c8, c9 = st.columns(2)
-        f_cuota = c8.number_input("Cuota", min_value=1.01, value=2.00, step=0.01)
-        f_resultado = c9.selectbox("Resultado", ["Pendiente", "Ganada", "Perdida"])
-
-        submitted = st.form_submit_button("Guardar apuesta")
-
-    if submitted:
-        new_row = pd.DataFrame([{
-            "usuario": current_user,
-            "fecha": f_date, "liga": f_liga, "local": f_local, "visitante": f_visitante,
-            "mercado": f_mercado, "linea": f_linea, "seleccion": f_seleccion,
-            "cuota": f_cuota, "stake": f_stake, "resultado": f_resultado,
-        }])
-        all_bets_df = pd.concat([all_bets_df, new_row], ignore_index=True)
-        ok, msg = put_file("bets_log.csv", all_bets_df.to_csv(index=False), f"Añadir apuesta de {current_user}")
-        if ok:
-            st.success("Apuesta guardada.")
-        else:
-            st.error(msg)
+            st.info("Añade al menos una selección (con el botón de arriba) para poder guardar la combinada.")
 
     if not log_df.empty:
         st.markdown("---")
@@ -1190,20 +1291,50 @@ with tab_diary:
                 return "background-color: #7f1d1d; color: white; font-weight: 600;"
             return "background-color: #78716c; color: white;"
 
-        log_display = log_df.drop(columns=["usuario"])
-        styled_log = log_display.style.format({"cuota": "{:.2f}", "stake": "{:.2f}", "linea": "{:.1f}"}).map(_color_resultado, subset=["resultado"])
-        st.dataframe(styled_log, use_container_width=True, hide_index=True)
+        singles_df = log_df[log_df["combo_id"] == ""]
+        combos_df = log_df[log_df["combo_id"] != ""]
+
+        if not singles_df.empty:
+            st.markdown("*Sencillas*")
+            log_display = singles_df.drop(columns=["usuario", "combo_id"])
+            styled_log = log_display.style.format({"cuota": "{:.2f}", "stake": "{:.2f}", "linea": "{:.1f}"}).map(_color_resultado, subset=["resultado"])
+            st.dataframe(styled_log, use_container_width=True, hide_index=True)
+
+        if not combos_df.empty:
+            st.markdown("*Combinadas*")
+            resultado_icon = {"Ganada": "🟢", "Perdida": "🔴", "Pendiente": "⚪"}
+            # sort_values(kind="stable") para que el orden de las combinadas dentro
+            # del groupby respete el orden en que se guardaron (más recientes al final).
+            for combo_id, group in combos_df.groupby("combo_id", sort=False):
+                first = group.iloc[0]
+                icon = resultado_icon.get(first["resultado"], "⚪")
+                titulo = (
+                    f"{icon} {first['fecha']} · combinada de {len(group)} selecciones · "
+                    f"cuota {float(first['cuota']):.2f} · stake {float(first['stake']):.2f}u · {first['resultado']}"
+                )
+                with st.expander(titulo):
+                    for _, leg in group.iterrows():
+                        linea_txt = f" {float(leg['linea']):.1f}" if pd.notna(leg["linea"]) and leg["linea"] != "" else ""
+                        st.write(f"- **{leg['liga']}**: {leg['local']} vs {leg['visitante']} — {leg['mercado']}{linea_txt} → {leg['seleccion']}")
 
         resolved = log_df[log_df["resultado"].isin(["Ganada", "Perdida"])].copy()
         if not resolved.empty:
-            resolved["pnl"] = resolved.apply(
-                lambda r: r["stake"] * (r["cuota"] - 1) if r["resultado"] == "Ganada" else -r["stake"],
-                axis=1,
+            # Cada pata de una combinada comparte cuota/stake/resultado: para no
+            # contar varias veces el mismo dinero apostado, nos quedamos con una
+            # sola fila por apuesta (por combo_id si es combinada, o por su propio
+            # índice si es sencilla — así cada sencilla sigue siendo su propio grupo).
+            resolved["_grupo"] = resolved["combo_id"].where(resolved["combo_id"] != "", resolved.index.astype(str))
+            resolved_unicas = resolved.drop_duplicates(subset="_grupo")
+            resolved_unicas = resolved_unicas.assign(
+                pnl=resolved_unicas.apply(
+                    lambda r: r["stake"] * (r["cuota"] - 1) if r["resultado"] == "Ganada" else -r["stake"],
+                    axis=1,
+                )
             )
             c1, c2, c3 = st.columns(3)
-            c1.metric("Apuestas resueltas", len(resolved))
-            c2.metric("P&L real", f"{resolved['pnl'].sum():+.1f}u")
-            c3.metric("ROI real", f"{resolved['pnl'].sum() / resolved['stake'].sum():+.1%}")
+            c1.metric("Apuestas resueltas", len(resolved_unicas))
+            c2.metric("P&L real", f"{resolved_unicas['pnl'].sum():+.1f}u")
+            c3.metric("ROI real", f"{resolved_unicas['pnl'].sum() / resolved_unicas['stake'].sum():+.1%}")
     else:
         st.info("Todavía no has registrado ninguna apuesta.")
 
