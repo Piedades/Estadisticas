@@ -39,3 +39,40 @@ def team_match_averages(df: pd.DataFrame, team: str) -> dict:
         stats[f"{label} en contra"] = against_.mean()
 
     return stats
+
+
+def team_line_hit_rate(df: pd.DataFrame, team: str, h_col: str, a_col: str, line: float, venue: str = "Ambos") -> dict:
+    """Estadística de "cuántas veces se ha superado esta línea": para los
+    mercados de córners/tiros/tiros a puerta/tarjetas/goles la cuota es
+    sobre el TOTAL del partido (local + visitante sumados, no solo lo que
+    hace el equipo elegido — confirmado por GenericPoissonModel.predict_match,
+    que da expected_total = lam + mu), así que esto mira, de los partidos en
+    los que jugó `team`, en cuántos el total del partido superó `line`.
+
+    venue: "Ambos" (todos los partidos del equipo), "Local" (solo cuando
+    jugó en casa) o "Visitante" (solo cuando jugó fuera).
+
+    Devuelve {"partidos": 0} si no hay datos suficientes, o
+    {"partidos", "over_pct", "under_pct", "media"} si los hay."""
+    if venue == "Local":
+        sub = df[df["HomeTeam"] == team]
+    elif venue == "Visitante":
+        sub = df[df["AwayTeam"] == team]
+    else:
+        sub = df[(df["HomeTeam"] == team) | (df["AwayTeam"] == team)]
+
+    if h_col not in sub.columns or a_col not in sub.columns:
+        return {"partidos": 0}
+    sub = sub.dropna(subset=[h_col, a_col])
+    if sub.empty:
+        return {"partidos": 0}
+
+    totals = sub[h_col] + sub[a_col]
+    n = len(totals)
+    over = int((totals > line).sum())
+    return {
+        "partidos": n,
+        "over_pct": over / n,
+        "under_pct": 1 - (over / n),
+        "media": totals.mean(),
+    }

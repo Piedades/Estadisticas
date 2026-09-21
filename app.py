@@ -19,7 +19,7 @@ from github_sync import get_file, put_file
 from auto_update import update_league, current_season_code
 from auth import authenticate, register_user, load_users, is_admin, delete_user, update_invite_code
 from season_sim import simulate_season
-from team_stats import team_match_averages, METRIC_COLUMNS
+from team_stats import team_match_averages, team_line_hit_rate, METRIC_COLUMNS
 from fixtures_api import (
     fetch_matches_for_date, resolve_team_name,
     EUROPEAN_COMPETITION_CODES, EUROPEAN_DISPLAY_NAMES,
@@ -27,7 +27,8 @@ from fixtures_api import (
 from xpts import expected_points_table
 from favorites import get_user_favorites, save_user_favorites
 from champions import predict_cross_goals, predict_cross_generic
-from odds_api import fetch_odds_for_league, match_odds_to_teams, implied_probs_from_odds
+from odds_api import fetch_odds_for_league, match_odds_to_teams, implied_probs_from_odds, find_arbitrage
+from telegram_bot import send_message as send_telegram_message
 from visuals import render_prob_bar, render_mini_prob_bar, favorite_badge, render_form_badges
 
 st.set_page_config(page_title="Pirujeando", layout="wide")
@@ -363,6 +364,7 @@ with tab_today:
         st.session_state["today_matches"] = matches
         st.session_state["today_warnings"] = warnings
         st.session_state["today_odds"] = None  # cuotas de una búsqueda anterior ya no valen
+        st.session_state["today_arb_hits"] = None
 
     if btn_col2.button("💰 Comparar con cuotas reales", key="today_odds_btn"):
         odds_by_league = {}
@@ -370,6 +372,7 @@ with tab_today:
             for lg_odds in ["E0", "SP1", "D1", "I1", "F1"]:
                 odds_by_league[lg_odds] = fetch_odds_for_league(lg_odds)
         st.session_state["today_odds"] = odds_by_league
+        st.session_state["today_arb_hits"] = None  # cuotas nuevas: los arbitrajes anteriores ya no valen
 
     odds_errors = set()
     for _lg_o, (_matches_o, _err_o) in (st.session_state.get("today_odds") or {}).items():
@@ -377,6 +380,40 @@ with tab_today:
             odds_errors.add(_err_o)
     for _err_o in odds_errors:
         st.warning(f"Cuotas: {_err_o}")
+
+    if st.button("🎯 Buscar arbitrajes (surebets)", key="today_arb_btn"):
+        if not st.session_state.get("today_odds"):
+            st.warning("Primero pulsa \"💰 Comparar con cuotas reales\" para traer las cuotas.")
+        else:
+            arb_hits = []
+            for lg_arb, (matches_arb, _err_arb) in st.session_state["today_odds"].items():
+                for om_arb in matches_arb:
+                    arb = find_arbitrage(om_arb)
+                    if arb is not None:
+                        arb_hits.append((lg_arb, om_arb, arb))
+            st.session_state["today_arb_hits"] = arb_hits
+
+    arb_hits = st.session_state.get("today_arb_hits")
+    if arb_hits is not None:
+        if not arb_hits:
+            st.info(
+                "No se ha encontrado ningún arbitraje ahora mismo (es lo normal: las "
+                "casas ponen margen a propósito para que esto no pase casi nunca)."
+            )
+        else:
+            st.success(f"¡{len(arb_hits)} arbitraje(s) encontrado(s)!")
+            for lg_arb, om_arb, arb in arb_hits:
+                with st.container(border=True):
+                    st.markdown(f"**{LEAGUES[lg_arb]}: {om_arb['home_raw']} vs {om_arb['away_raw']}**")
+                    st.caption(
+                        f"Margen garantizado: {arb['margen']:.1%}, repartiendo "
+                        f"{arb['stake_total']:.0f}u entre las casas con mejor cuota."
+                    )
+                    arb_df = pd.DataFrame(arb["reparto"])
+                    st.dataframe(
+                        arb_df.style.format({"cuota": "{:.2f}", "stake": "{:.2f}", "beneficio": "{:+.2f}"}),
+                        use_container_width=True, hide_index=True,
+                    )
 
     today_warnings = st.session_state.get("today_warnings") or []
     for w in today_warnings:
@@ -690,6 +727,30 @@ with tab_team:
         st.caption("No hay histórico suficiente para graficar la evolución.")
     else:
         st.line_chart(elo_hist.set_index("date")["elo"])
+
+    st.markdown("---")
+    st.markdown("**Estadísticas de líneas**")
+    st.caption(
+        "En cuántos partidos de este equipo el TOTAL del partido (local + visitante "
+        "sumados) ha superado una línea concreta — la misma lógica que usan las casas "
+        "de apuestas para estos mercados."
+    )
+    LINE_METRICS = {"Goles totales": ("FTHG", "FTAG"), **METRIC_COLUMNS}
+    lc1, lc2, lc3 = st.columns(3)
+    line_metric = lc1.selectbox("Mercado", list(LINE_METRICS.keys()), key="line_stats_metric")
+    line_value = lc2.number_input("Línea", min_value=0.0, value=9.5, step=0.5, key="line_stats_value")
+    line_venue = lc3.selectbox("¿Dónde juega?", ["Ambos", "Local", "Visitante"], key="line_stats_venue")
+
+    h_col_line, a_col_line = LINE_METRICS[line_metric]
+    line_stats = team_line_hit_rate(df, team_choice, h_col_line, a_col_line, line_value, line_venue)
+    if line_stats["partidos"] == 0:
+        st.caption("No hay datos suficientes para esta métrica con los partidos cargados.")
+    else:
+        lr1, lr2, lr3 = st.columns(3)
+        lr1.metric(f"Over {line_value:.1f}", f"{line_stats['over_pct']:.0%}")
+        lr2.metric(f"Under {line_value:.1f}", f"{line_stats['under_pct']:.0%}")
+        lr3.metric("Media por partido", f"{line_stats['media']:.1f}")
+        st.caption(f"Sobre {line_stats['partidos']} partidos ({line_venue.lower()}).")
 
 # ---------------------------------------------------------------
 # TAB: Comparar equipos
@@ -1335,8 +1396,122 @@ with tab_diary:
             c1.metric("Apuestas resueltas", len(resolved_unicas))
             c2.metric("P&L real", f"{resolved_unicas['pnl'].sum():+.1f}u")
             c3.metric("ROI real", f"{resolved_unicas['pnl'].sum() / resolved_unicas['stake'].sum():+.1%}")
+
+            # Desglose por mercado: una combinada puede mezclar mercados
+            # distintos entre sus patas (p. ej. córners de un partido +
+            # 1X2 de otro), así que no tiene un único "mercado" propio —
+            # se agrupa aparte como "Combinadas" en vez de colgarla del
+            # mercado de solo una de sus patas.
+            resolved_unicas["mercado_grupo"] = np.where(
+                resolved_unicas["combo_id"] != "", "Combinadas", resolved_unicas["mercado"]
+            )
+            breakdown = (
+                resolved_unicas.groupby("mercado_grupo")
+                .agg(apuestas=("pnl", "count"), stake_total=("stake", "sum"), pnl=("pnl", "sum"))
+                .reset_index()
+                .sort_values("pnl", ascending=False)
+            )
+            breakdown["roi"] = breakdown["pnl"] / breakdown["stake_total"]
+            breakdown = breakdown.rename(columns={
+                "mercado_grupo": "Mercado", "apuestas": "Apuestas",
+                "stake_total": "Stake total", "pnl": "P&L", "roi": "ROI",
+            })
+            st.markdown("**Desglose por mercado**")
+            st.dataframe(
+                breakdown.style.format({"Stake total": "{:.2f}u", "P&L": "{:+.1f}u", "ROI": "{:+.1%}"}),
+                use_container_width=True, hide_index=True,
+            )
     else:
         st.info("Todavía no has registrado ninguna apuesta.")
+
+    # -------------------------------------------------------------
+    # Calculadora de Kelly: cuánto apostar según el modelo, dada una
+    # cuota que te ofrecen. Deliberadamente fuera del formulario de
+    # apuesta (para poder cambiar mercado/línea con reruns libres, igual
+    # que el selector de mercado de la combinada) — es una herramienta de
+    # consulta, no rellena la apuesta por ti.
+    # -------------------------------------------------------------
+    st.markdown("---")
+    with st.expander("🧮 Calculadora de Kelly (cuánto apostar según el modelo)"):
+        st.caption(
+            "Compara la probabilidad que da el modelo con la cuota que te ofrecen y "
+            "sugiere cuánto apostar (criterio de Kelly). En la práctica casi nadie "
+            "apuesta el Kelly completo — es habitual usar una fracción (1/2 o 1/4) "
+            "para reducir el riesgo de rachas malas."
+        )
+        kc1, kc2, kc3 = st.columns(3)
+        k_liga = kc1.selectbox("Liga", list(LEAGUES.values()), key="kelly_liga")
+        k_mercado = kc2.selectbox("Mercado", MERCADOS_DIARIO, key="kelly_mercado")
+        k_banca = kc3.number_input("Banca (unidades)", min_value=1.0, value=100.0, step=10.0, key="kelly_banca")
+
+        kc4, kc5 = st.columns(2)
+        k_local = kc4.text_input("Equipo local", key="kelly_local")
+        k_visitante = kc5.text_input("Equipo visitante", key="kelly_visitante")
+
+        es_1x2_kelly = k_mercado == "Ganador (1X2)"
+        if es_1x2_kelly:
+            k_linea = None
+            k_seleccion = st.selectbox("Selección", ["Local", "Empate", "Visitante"], key="kelly_seleccion")
+        else:
+            kc6, kc7 = st.columns(2)
+            k_linea = kc6.number_input(
+                f"Línea de {k_mercado.lower()}", min_value=0.0, value=9.5, step=0.5, key="kelly_linea",
+            )
+            k_seleccion = kc7.selectbox("Selección", ["Over (más de)", "Under (menos de)"], key="kelly_seleccion_ou")
+
+        k_cuota = st.number_input("Cuota que te ofrecen", min_value=1.01, value=2.00, step=0.01, key="kelly_cuota")
+
+        if st.button("Calcular stake sugerido", key="kelly_calc_btn"):
+            k_code = [c for c, name in LEAGUES.items() if name == k_liga][0]
+            k_model = get_goals_model(k_code, decay)
+            k_teams = sorted(k_model.teams)
+            k_home_r = resolve_team_name(k_local, k_teams) if k_local else None
+            k_away_r = resolve_team_name(k_visitante, k_teams) if k_visitante else None
+
+            if k_home_r is None or k_away_r is None:
+                st.error(
+                    "No reconozco alguno de los dos equipos en esta liga con los datos "
+                    "cargados (revisa el nombre)."
+                )
+            else:
+                prob = None
+                if es_1x2_kelly:
+                    pred_k = k_model.predict_match(k_home_r, k_away_r)
+                    prob = {"Local": pred_k["P(H)"], "Empate": pred_k["P(D)"], "Visitante": pred_k["P(A)"]}[k_seleccion]
+                elif k_mercado == "Goles totales":
+                    pred_k = k_model.predict_match(k_home_r, k_away_r)
+                    matrix = pred_k["score_matrix"]
+                    totals_grid = np.add.outer(np.arange(matrix.shape[0]), np.arange(matrix.shape[1]))
+                    p_over = matrix[totals_grid > k_linea].sum()
+                    prob = p_over if k_seleccion.startswith("Over") else 1 - p_over
+                else:
+                    k_metric_models = get_metric_models(k_code)
+                    gm = k_metric_models.get(k_mercado)
+                    if gm is None or k_home_r not in gm.teams or k_away_r not in gm.teams:
+                        st.error(f"No hay modelo de {k_mercado} para esta liga (faltan datos en el CSV).")
+                    else:
+                        pred_gm = gm.predict_match(k_home_r, k_away_r)
+                        p_over = 1 - poisson.cdf(math.floor(k_linea), pred_gm["expected_total"])
+                        prob = p_over if k_seleccion.startswith("Over") else 1 - p_over
+
+                if prob is not None:
+                    b = k_cuota - 1
+                    kelly_f = max((b * prob - (1 - prob)) / b, 0.0) if b > 0 else 0.0
+                    stake_kelly = kelly_f * k_banca
+                    cA, cB, cC = st.columns(3)
+                    cA.metric("Probabilidad del modelo", f"{prob:.1%}")
+                    cB.metric("Kelly completo", f"{kelly_f:.1%}", help="Fracción de tu banca")
+                    cC.metric("Stake sugerido (Kelly completo)", f"{stake_kelly:.2f}u")
+                    if kelly_f <= 0:
+                        st.warning(
+                            "El modelo no ve ventaja con esta cuota (Kelly ≤ 0): no habría "
+                            "value bet, mejor no apostar."
+                        )
+                    else:
+                        st.caption(
+                            f"Más prudente — Kelly 1/2: {stake_kelly / 2:.2f}u · "
+                            f"Kelly 1/4: {stake_kelly / 4:.2f}u"
+                        )
 
 # ---------------------------------------------------------------
 # TAB: Administración (solo visible para usuarios admin)
@@ -1380,3 +1555,30 @@ if tab_admin is not None:
                 st.success("Código de invitación actualizado.")
             else:
                 st.error(msg)
+
+        st.markdown("---")
+        st.markdown("**Alertas por Telegram**")
+        st.caption(
+            "Prueba que el bot de Telegram está bien configurado. El aviso diario "
+            "automático (value bets de tus equipos favoritos) lo manda un GitHub "
+            "Action programado, no la app — este botón solo comprueba que el token "
+            "y el chat_id de aquí (Streamlit Cloud) funcionan."
+        )
+        tg_token = st.secrets.get("TELEGRAM_BOT_TOKEN")
+        tg_chat_id = st.secrets.get("TELEGRAM_CHAT_ID")
+        if not tg_token or not tg_chat_id:
+            st.warning(
+                "Faltan TELEGRAM_BOT_TOKEN y/o TELEGRAM_CHAT_ID en Settings > Secrets. "
+                "Mira telegram_bot.py para los pasos de cómo conseguirlos (crear el bot "
+                "con @BotFather y sacar tu chat_id)."
+            )
+        else:
+            if st.button("📨 Enviar mensaje de prueba", key="admin_telegram_test_btn"):
+                ok, msg = send_telegram_message(
+                    tg_token, tg_chat_id,
+                    "🤖 Mensaje de prueba desde Pirujeando — si ves esto, el bot está bien configurado.",
+                )
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)

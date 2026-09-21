@@ -103,8 +103,8 @@ TEAM_ALIASES = {
 }
 
 
-def _headers():
-    token = st.secrets.get("FOOTBALL_DATA_TOKEN")
+def _headers(token: str | None = None):
+    token = token or st.secrets.get("FOOTBALL_DATA_TOKEN")
     if not token:
         return None
     return {"X-Auth-Token": token}
@@ -153,13 +153,18 @@ def resolve_team_name(raw_name: str, known_teams: list) -> str | None:
     return None
 
 
-def fetch_matches_for_date(date_str: str):
+def fetch_matches_for_date(date_str: str, token: str | None = None):
     """Devuelve (partidos, avisos). partidos es una lista de dicts:
     {league_code, home_raw, away_raw, time, status}. avisos es una lista de
     mensajes (vacía si todo fue bien) — un fallo en UNA competición (p. ej.
     si algún día football-data.org cambiara el código de la Europa League)
-    ya no cancela las demás, solo se avisa y se sigue con el resto."""
-    headers = _headers()
+    ya no cancela las demás, solo se avisa y se sigue con el resto.
+
+    token: si no se pasa, se usa st.secrets (comportamiento de siempre
+    dentro de la app). El script standalone del aviso diario por Telegram
+    pasa aquí el token leído de una variable de entorno, porque fuera de
+    una app de Streamlit en marcha no hay st.secrets disponible."""
+    headers = _headers(token)
     if headers is None:
         return [], [
             "No hay FOOTBALL_DATA_TOKEN configurado. Ve a Streamlit Cloud > "

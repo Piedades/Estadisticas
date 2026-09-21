@@ -33,17 +33,17 @@ LEAGUE_NAME_HINTS = {
 }
 
 
-def _token():
-    return st.secrets.get("ODDS_API_TOKEN")
+def _token(token: str | None = None):
+    return token or st.secrets.get("ODDS_API_TOKEN")
 
 
 @st.cache_data(show_spinner=False, ttl="6h")
-def _discover_sport_keys() -> dict:
+def _discover_sport_keys(token: str | None = None) -> dict:
     """GET /v4/sports una vez (se cachea) y empareja cada una de nuestras 5
     ligas con su "sport key" real buscando por nombre. Devuelve
     {league_code: sport_key} — una liga que no se encuentre simplemente no
     sale en el dict, no rompe nada."""
-    token = _token()
+    token = _token(token)
     if not token:
         return {}
     try:
@@ -68,12 +68,21 @@ def _discover_sport_keys() -> dict:
     return found
 
 
-def fetch_odds_for_league(league_code: str):
+def fetch_odds_for_league(league_code: str, token: str | None = None):
     """Devuelve (partidos_con_cuota, error). partidos_con_cuota es una lista
-    de dicts {home_raw, away_raw, odds_home, odds_draw, odds_away} — la
-    cuota media 1X2 entre las casas que devuelve la API para esa región.
-    error es None si fue bien, o un mensaje explicando qué falló."""
-    token = _token()
+    de dicts {home_raw, away_raw, odds_home, odds_draw, odds_away,
+    best_home, best_home_book, best_draw, best_draw_book, best_away,
+    best_away_book} — la cuota media 1X2 entre las casas que devuelve la
+    API para esa región, y además la MEJOR cuota individual de cada
+    resultado y qué casa la ofrece (para poder detectar arbitrajes:
+    combinar la mejor cuota de cada resultado, aunque sean de casas
+    distintas). error es None si fue bien, o un mensaje explicando qué
+    falló.
+
+    token: si no se pasa, se usa st.secrets (comportamiento de siempre
+    dentro de la app); el aviso diario por Telegram pasa aquí el token de
+    una variable de entorno."""
+    token = _token(token)
     if not token:
         return [], (
             "No hay ODDS_API_TOKEN configurado. Ve a Streamlit Cloud > tu "
@@ -81,7 +90,7 @@ def fetch_odds_for_league(league_code: str):
             "(consíguelo gratis en the-odds-api.com)."
         )
 
-    sport_keys = _discover_sport_keys()
+    sport_keys = _discover_sport_keys(token)
     sport_key = sport_keys.get(league_code)
     if sport_key is None:
         return [], (
@@ -118,20 +127,34 @@ def fetch_odds_for_league(league_code: str):
         if not home_raw or not away_raw:
             continue
         # Media de la cuota 1X2 entre todas las casas que trae la respuesta,
-        # para no depender de una sola casa de apuestas.
+        # para no depender de una sola casa de apuestas — y de paso nos
+        # quedamos con la MEJOR cuota de cada resultado y qué casa la
+        # ofrece, para poder detectar arbitrajes (find_arbitrage).
         h_odds, d_odds, a_odds = [], [], []
+        best_home, best_home_book = None, None
+        best_draw, best_draw_book = None, None
+        best_away, best_away_book = None, None
         for bk in event.get("bookmakers", []):
+            bk_title = bk.get("title") or bk.get("key") or "?"
             for market in bk.get("markets", []):
                 if market.get("key") != "h2h":
                     continue
                 for outcome in market.get("outcomes", []):
                     name, price = outcome.get("name"), outcome.get("price")
+                    if price is None:
+                        continue
                     if name == home_raw:
                         h_odds.append(price)
+                        if best_home is None or price > best_home:
+                            best_home, best_home_book = price, bk_title
                     elif name == away_raw:
                         a_odds.append(price)
+                        if best_away is None or price > best_away:
+                            best_away, best_away_book = price, bk_title
                     elif name == "Draw":
                         d_odds.append(price)
+                        if best_draw is None or price > best_draw:
+                            best_draw, best_draw_book = price, bk_title
         if not h_odds or not a_odds:
             continue
         matches.append({
@@ -141,8 +164,45 @@ def fetch_odds_for_league(league_code: str):
             "odds_draw": (sum(d_odds) / len(d_odds)) if d_odds else None,
             "odds_away": sum(a_odds) / len(a_odds),
             "n_bookmakers": len(event.get("bookmakers", [])),
+            "best_home": best_home, "best_home_book": best_home_book,
+            "best_draw": best_draw, "best_draw_book": best_draw_book,
+            "best_away": best_away, "best_away_book": best_away_book,
         })
     return matches, None
+
+
+def find_arbitrage(match: dict, stake_total: float = 100.0):
+    """Comprueba si, combinando la MEJOR cuota de cada resultado (aunque
+    sean de casas distintas), hay arbitraje ("surebet"): una combinación de
+    apuestas que gana dinero seguro pase lo que pase, porque la suma de las
+    probabilidades implícitas de las mejores cuotas es menor que 100%.
+
+    Devuelve None si no hay arbitraje (lo normal — las casas ponen margen a
+    propósito para que esto no pase casi nunca), o un dict con el margen de
+    beneficio y cuánto apostar a cada resultado (repartiendo `stake_total`
+    en unidades) para ganar lo mismo gane quien gane."""
+    bh, bd, ba = match.get("best_home"), match.get("best_draw"), match.get("best_away")
+    if not bh or not ba:
+        return None
+    implied = [1 / bh, 1 / ba]
+    outcomes = [("Local", bh, match.get("best_home_book"))]
+    outcomes.append(("Visitante", ba, match.get("best_away_book")))
+    if bd:
+        implied.append(1 / bd)
+        outcomes.append(("Empate", bd, match.get("best_draw_book")))
+    book_pct = sum(implied)
+    if book_pct >= 1.0:
+        return None  # no hay arbitraje, es lo normal
+
+    margin = 1 - book_pct
+    stakes = []
+    for (label, odds, book), imp in zip(outcomes, implied):
+        stake = stake_total * imp / book_pct
+        stakes.append({
+            "resultado": label, "casa": book, "cuota": odds,
+            "stake": stake, "beneficio": stake * odds - stake_total,
+        })
+    return {"margen": margin, "stake_total": stake_total, "reparto": stakes}
 
 
 def match_odds_to_teams(odds_matches: list, home: str, away: str, known_teams: list):
