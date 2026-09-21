@@ -1,0 +1,30 @@
+name: Aviso diario por Telegram
+
+on:
+  schedule:
+    # Todos los días a las 08:00 UTC (~10:00 hora de España en horario de verano)
+    - cron: "0 8 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  telegram-alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install streamlit pandas numpy scipy requests
+
+      - name: Avisar por Telegram de los favoritos que juegan hoy
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FOOTBALL_DATA_TOKEN: ${{ secrets.FOOTBALL_DATA_TOKEN }}
+          ODDS_API_TOKEN: ${{ secrets.ODDS_API_TOKEN }}
+        run: python scripts/send_telegram_alerts.py
