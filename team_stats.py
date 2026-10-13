@@ -41,16 +41,18 @@ def team_match_averages(df: pd.DataFrame, team: str) -> dict:
     return stats
 
 
-def team_line_hit_rate(df: pd.DataFrame, team: str, h_col: str, a_col: str, line: float, venue: str = "Ambos") -> dict:
-    """Estadística de "cuántas veces se ha superado esta línea": para los
-    mercados de córners/tiros/tiros a puerta/tarjetas/goles la cuota es
-    sobre el TOTAL del partido (local + visitante sumados, no solo lo que
-    hace el equipo elegido — confirmado por GenericPoissonModel.predict_match,
-    que da expected_total = lam + mu), así que esto mira, de los partidos en
-    los que jugó `team`, en cuántos el total del partido superó `line`.
+def team_line_hit_rate(df: pd.DataFrame, team: str, h_col: str, a_col: str, line: float,
+                       venue: str = "Ambos", scope: str = "Total del partido", rivals=None) -> dict:
+    """Estadística de "cuántas veces se ha superado esta línea".
 
-    venue: "Ambos" (todos los partidos del equipo), "Local" (solo cuando
-    jugó en casa) o "Visitante" (solo cuando jugó fuera).
+    scope:
+      - "Total del partido": local + visitante sumados (como las casas para córners,
+        tiros, tarjetas y goles totales).
+      - "Este equipo": solo lo que hace `team` (sus córners, sus tiros a puerta...).
+      - "El rival": solo lo que hace el equipo contrario a `team`.
+    venue: "Ambos", "Local" (solo cuando `team` jugó en casa) o "Visitante".
+    rivals: lista opcional de equipos; si se da, solo cuentan los partidos de `team`
+        contra alguno de ellos (p. ej. Barcelona, Real Madrid, Ath Madrid).
 
     Devuelve {"partidos": 0} si no hay datos suficientes, o
     {"partidos", "over_pct", "under_pct", "media"} si los hay."""
@@ -63,16 +65,25 @@ def team_line_hit_rate(df: pd.DataFrame, team: str, h_col: str, a_col: str, line
 
     if h_col not in sub.columns or a_col not in sub.columns:
         return {"partidos": 0}
+    if rivals:
+        rival_of_row = sub["AwayTeam"].where(sub["HomeTeam"] == team, sub["HomeTeam"])
+        sub = sub[rival_of_row.isin(list(rivals))]
     sub = sub.dropna(subset=[h_col, a_col])
     if sub.empty:
         return {"partidos": 0}
 
-    totals = sub[h_col] + sub[a_col]
-    n = len(totals)
-    over = int((totals > line).sum())
+    is_home = sub["HomeTeam"] == team
+    if scope == "Este equipo":
+        values = sub[h_col].where(is_home, sub[a_col])
+    elif scope == "El rival":
+        values = sub[a_col].where(is_home, sub[h_col])
+    else:
+        values = sub[h_col] + sub[a_col]
+    n = len(values)
+    over = int((values > line).sum())
     return {
         "partidos": n,
         "over_pct": over / n,
         "under_pct": 1 - (over / n),
-        "media": totals.mean(),
+        "media": values.mean(),
     }
