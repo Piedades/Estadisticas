@@ -28,7 +28,6 @@ from xpts import expected_points_table
 from favorites import get_user_favorites, save_user_favorites
 from champions import predict_cross_goals, predict_cross_generic
 from odds_api import fetch_odds_for_league, match_odds_to_teams, implied_probs_from_odds, find_arbitrage
-from telegram_bot import send_message as send_telegram_message
 from visuals import render_prob_bar, render_mini_prob_bar, favorite_badge, render_form_badges
 
 st.set_page_config(page_title="Pirujeando", layout="wide")
@@ -1202,6 +1201,9 @@ with tab_diary:
 
     log_df = all_bets_df[all_bets_df["usuario"] == current_user].copy()
 
+    if st.session_state.get("diary_flash"):
+        st.success(st.session_state.pop("diary_flash"))
+
     tipo_apuesta = st.radio(
         "Tipo de apuesta", ["Sencilla", "Combinada"], horizontal=True, key="diary_tipo_apuesta",
         help="Combinada: une selecciones de partidos y/o mercados distintos (como en cualquier "
@@ -1252,7 +1254,11 @@ with tab_diary:
             all_bets_df = pd.concat([all_bets_df, new_row], ignore_index=True)
             ok, msg = put_file("bets_log.csv", all_bets_df.to_csv(index=False), f"Añadir apuesta de {current_user}")
             if ok:
-                st.success("Apuesta guardada.")
+                # Se guarda el aviso en session_state y se hace rerun para que el
+                # historial y el P&L de abajo ya incluyan la apuesta recién guardada
+                # (sin rerun se veían los datos de antes de guardar).
+                st.session_state["diary_flash"] = "Apuesta guardada."
+                st.rerun()
             else:
                 st.error(msg)
 
@@ -1555,30 +1561,3 @@ if tab_admin is not None:
                 st.success("Código de invitación actualizado.")
             else:
                 st.error(msg)
-
-        st.markdown("---")
-        st.markdown("**Alertas por Telegram**")
-        st.caption(
-            "Prueba que el bot de Telegram está bien configurado. El aviso diario "
-            "automático (value bets de tus equipos favoritos) lo manda un GitHub "
-            "Action programado, no la app — este botón solo comprueba que el token "
-            "y el chat_id de aquí (Streamlit Cloud) funcionan."
-        )
-        tg_token = st.secrets.get("TELEGRAM_BOT_TOKEN")
-        tg_chat_id = st.secrets.get("TELEGRAM_CHAT_ID")
-        if not tg_token or not tg_chat_id:
-            st.warning(
-                "Faltan TELEGRAM_BOT_TOKEN y/o TELEGRAM_CHAT_ID en Settings > Secrets. "
-                "Mira telegram_bot.py para los pasos de cómo conseguirlos (crear el bot "
-                "con @BotFather y sacar tu chat_id)."
-            )
-        else:
-            if st.button("📨 Enviar mensaje de prueba", key="admin_telegram_test_btn"):
-                ok, msg = send_telegram_message(
-                    tg_token, tg_chat_id,
-                    "🤖 Mensaje de prueba desde Pirujeando — si ves esto, el bot está bien configurado.",
-                )
-                if ok:
-                    st.success(msg)
-                else:
-                    st.error(msg)
