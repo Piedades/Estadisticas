@@ -1203,8 +1203,8 @@ with tab_diary:
     MERCADOS_MODELO = ["Ganador (1X2)", "Córners", "Tiros", "Tiros a puerta", "Tarjetas amarillas", "Goles totales"]
     # Mercados "por equipo": solo se pueden ANOTAR en el diario (la app no tiene
     # datos para modelarlos, así que no hay predicción ni Kelly para ellos).
-    MERCADOS_EQUIPO = ["Tiros a puerta del equipo", "Paradas del portero"]
-    LINEA_POR_DEFECTO = {"Tiros a puerta del equipo": 4.5, "Paradas del portero": 3.5}
+    MERCADOS_EQUIPO = ["Tiros a puerta del equipo", "Córners del equipo", "Paradas del portero"]
+    LINEA_POR_DEFECTO = {"Tiros a puerta del equipo": 4.5, "Córners del equipo": 4.5, "Paradas del portero": 3.5}
     MERCADOS_DIARIO = MERCADOS_MODELO + MERCADOS_EQUIPO
     OPCIONES_1X2 = ["Local", "Empate", "Visitante", "1X", "X2", "12"]
 
@@ -1346,6 +1346,12 @@ with tab_diary:
             if pd.isna(g.get("HST")) or pd.isna(g.get("AST")):
                 return None, "faltan estadísticas de ese partido"
             valor = g["HST"] if lado == "H" else g["AST"]
+        elif mercado == "Córners del equipo":
+            if lado is None:
+                return None, "falta saber de qué equipo es"
+            if pd.isna(g.get("HC")) or pd.isna(g.get("AC")):
+                return None, "faltan estadísticas de ese partido"
+            valor = g["HC"] if lado == "H" else g["AC"]
         elif mercado in totales:
             hc, ac = totales[mercado]
             if pd.isna(g.get(hc)) or pd.isna(g.get(ac)):
@@ -1655,7 +1661,7 @@ with tab_diary:
         es_1x2_leg = leg_mercado == "Ganador (1X2)"
         es_equipo_leg = leg_mercado in MERCADOS_EQUIPO
 
-        with st.form("combo_add_leg", clear_on_submit=True):
+        with st.form("combo_add_leg", clear_on_submit=False):
             leg_liga = st.selectbox("Liga", list(LEAGUES.values()), key="combo_leg_liga")
 
             lc3, lc4 = st.columns(2)
